@@ -1,0 +1,104 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs; a stale result on an old commit is noise.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported and current. The client needs streaming fetch, which is
+        # why 18 is the floor.
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm -r test
+
+  # The corpus is the contract between implementations (PROTOCOL.md §12). It runs as
+  # its own job so a failure names itself in the checks list rather than hiding inside
+  # a package's suite.
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - name: conformance corpus (javascript)
+        run: pnpm conformance
+      - name: corpus is regenerable and committed in sync
+        run: |
+          node conformance/build-vectors.mjs
+          git diff --exit-code conformance/vectors.json \
+            || (echo "::error::vectors.json is out of sync with build-vectors.mjs" && exit 1)
+
+  # The Rust half reads the same vectors.json. Once pushmount-core lands in v0.3 this
+  # job is what proves the two implementations have not drifted.
+  conformance-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: conformance corpus (rust)
+        working-directory: spikes/wasm-vs-ts/core-rs
+        run: cargo test --release
+
+  invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/check-invariants.mjs
+
+  example:
+    name: the quickstart actually runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      # The definition of done is a developer getting push working in ten minutes. If
+      # the example stops booting, that claim is already false.
+      - run: node scripts/smoke-example.mjs

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pushmount example</title>
+    <style>
+      :root {
+        --bg: #f1f4f4; --surface: #fbfcfc; --ink: #121a1b; --muted: #677677;
+        --rule: #d2dada; --accent: #0a6663; --warn: #8a6100;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0d1313; --surface: #141c1c; --ink: #e3eaea; --muted: #7f8f8f;
+          --rule: #26302f; --accent: #45bdb2; --warn: #d6a63c;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        background: var(--bg); color: var(--ink); margin: 0; padding: 2.5rem 1.5rem;
+        font: 15px/1.6 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      #root { max-width: 34rem; margin: 0 auto; }
+      header {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 1rem; flex-wrap: wrap; border-bottom: 1px solid var(--rule);
+        padding-bottom: 1rem; margin-bottom: 1.5rem;
+      }
+      h1 {
+        font: 600 1.15rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin: 0; letter-spacing: -.02em; display: flex; align-items: center; gap: .6rem;
+      }
+      h2 {
+        font: 600 .72rem/1 ui-monospace, Menlo, monospace; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--muted); margin: 2rem 0 .75rem;
+      }
+      .status {
+        font: 600 .65rem/1 ui-monospace, Menlo, monospace; letter-spacing: .09em;
+        text-transform: uppercase; padding: .2rem .45rem; border-radius: 2px;
+        border: 1px solid currentColor; color: var(--muted);
+      }
+      .status.open { color: var(--accent); }
+      .status.connecting, .status.reconnecting { color: var(--warn); }
+      button {
+        font: 500 .9rem ui-sans-serif, sans-serif; color: var(--bg);
+        background: var(--accent); border: 0; border-radius: 3px;
+        padding: .5rem .9rem; cursor: pointer;
+      }
+      button:disabled { opacity: .5; cursor: default; }
+      button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+      .stat {
+        background: var(--surface); border: 1px solid var(--rule); border-radius: 3px;
+        padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .2rem;
+      }
+      .stat .label {
+        font: 600 .68rem/1 ui-monospace, Menlo, monospace; letter-spacing: .1em;
+        text-transform: uppercase; color: var(--muted);
+      }
+      .stat strong {
+        font: 600 1.9rem/1.1 ui-monospace, Menlo, monospace; letter-spacing: -.03em;
+        font-variant-numeric: tabular-nums;
+      }
+      .orders { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+      .orders li {
+        display: flex; justify-content: space-between; padding: .6rem .1rem;
+        border-bottom: 1px solid var(--rule); font-variant-numeric: tabular-nums;
+      }
+      .orders code { font-family: ui-monospace, Menlo, monospace; color: var(--accent); }
+      .empty, footer { color: var(--muted); font-size: .9rem; }
+      footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--rule); }
+      a { color: var(--accent); }
+      .gap {
+        background: var(--surface); border-left: 3px solid var(--warn);
+        border-radius: 3px; padding: .7rem .9rem; margin: 0 0 1rem; font-size: .9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

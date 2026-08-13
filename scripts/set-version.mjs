@@ -1,0 +1,24 @@
+// Sets one version across every published package, because the conformance guarantee
+// is only meaningful if the packages that share the corpus ship together.
+//
+//   node scripts/set-version.mjs 0.1.0
+
+import { readFileSync, writeFileSync } from 'node:fs'
+
+const version = process.argv[2]
+if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version ?? '')) {
+  console.error('usage: node scripts/set-version.mjs <semver>')
+  process.exit(2)
+}
+
+const PACKAGES = ['packages/server', 'packages/client', 'packages/react']
+const root = new URL('..', import.meta.url).pathname
+
+for (const pkg of PACKAGES) {
+  const path = `${root}${pkg}/package.json`
+  const manifest = JSON.parse(readFileSync(path, 'utf8'))
+  manifest.version = version
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`)
+  console.log(`  ${manifest.name} → ${version}`)
+}
+console.log('\nrun `node scripts/check-invariants.mjs` to confirm lockstep.')

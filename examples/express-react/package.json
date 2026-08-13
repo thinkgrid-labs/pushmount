@@ -1,0 +1,19 @@
+{
+  "name": "pushmount-example-express-react",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@pushmount/react": "workspace:*",
+    "@pushmount/server": "workspace:*",
+    "express": "^5.2.1",
+    "compression": "^1.8.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

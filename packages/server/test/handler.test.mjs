@@ -1,0 +1,391 @@
+// HTTP handler tests — PROTOCOL.md §4, §5, §7, §8.
+// Runs against a real node:http server over a real socket; nothing here is mocked,
+// because every requirement in §4.4 exists to survive something a mock cannot model.
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
+import { createHub } from '../dist/index.js'
+
+/** Boots a server whose routes mirror the quickstart. */
+async function boot(hubOptions = {}, handlerOptions = {}, decorate = () => {}) {
+  const hub = createHub({ keepAliveMs: 0, ...hubOptions })
+  const handler = hub.handler(handlerOptions)
+  const cursorHandler = hub.cursorHandler()
+
+  const server = createServer((req, res) => {
+    decorate(req)
+    const path = req.url.split('?')[0]
+    if (path === '/events/cursor') return cursorHandler(req, res)
+    if (path === '/events') return handler(req, res)
+    res.writeHead(404).end()
+  })
+
+  await new Promise((r) => server.listen(0, r))
+  const base = `http://127.0.0.1:${server.address().port}`
+
+  return {
+    hub,
+    base,
+    async close() {
+      hub.close()
+      await new Promise((r) => server.close(r))
+    },
+  }
+}
+
+/** Opens a stream and collects frames until `count` non-comment frames arrive. */
+async function openStream(base, query, init = {}) {
+  const ctrl = new AbortController()
+  const res = await fetch(`${base}/events?${query}`, { ...init, signal: ctrl.signal })
+  const frames = []
+  let buffer = ''
+  let reader
+
+  if (res.body) {
+    reader = res.body.getReader()
+    const dec = new TextDecoder()
+    ;(async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += dec.decode(value, { stream: true })
+          let i
+          while ((i = buffer.indexOf('\n\n')) !== -1) {
+            frames.push(buffer.slice(0, i + 2))
+            buffer = buffer.slice(i + 2)
+          }
+        }
+      } catch {
+        // aborted
+      }
+    })()
+  }
+
+  return {
+    res,
+    frames,
+    /** Waits for a frame matching `match`, or throws after `ms`. */
+    async waitFor(match, ms = 1500) {
+      const deadline = Date.now() + ms
+      for (;;) {
+        const hit = frames.find(match)
+        if (hit !== undefined) return hit
+        if (Date.now() > deadline) {
+          throw new Error(`timed out; frames so far: ${JSON.stringify(frames)}`)
+        }
+        await new Promise((r) => setTimeout(r, 10))
+      }
+    },
+    close() {
+      ctrl.abort()
+    },
+  }
+}
+
+const dataFrames = (frames) => frames.filter((f) => f.startsWith('id: '))
+
+// ---------------------------------------------------------------- §4.1 / §4.2
+
+test('400 when topics is missing or empty', async () => {
+  const s = await boot()
+  try {
+    assert.equal((await fetch(`${s.base}/events`)).status, 400)
+    assert.equal((await fetch(`${s.base}/events?topics=`)).status, 400)
+  } finally {
+    await s.close()
+  }
+})
+
+test('400 for a topic that violates §3', async () => {
+  const s = await boot()
+  try {
+    for (const bad of ['%7Egap', 'a%0Ab', 'a%00b', encodeURIComponent('x'.repeat(256))]) {
+      const res = await fetch(`${s.base}/events?topics=${bad}`)
+      assert.equal(res.status, 400, `topic ${bad} should be rejected`)
+    }
+  } finally {
+    await s.close()
+  }
+})
+
+test('400 for a malformed cursor rather than silently starting live', async () => {
+  const s = await boot()
+  try {
+    // The dangerous alternative: treat it as "no cursor", open the stream, and let the
+    // client believe it resumed. It would never be told otherwise.
+    const res = await fetch(`${s.base}/events?topics=t&last_event_id=nonsense`)
+    assert.equal(res.status, 400)
+    const res2 = await fetch(`${s.base}/events?topics=t`, {
+      headers: { 'last-event-id': '01-0' },
+    })
+    assert.equal(res2.status, 400, 'leading zeros are not canonical')
+  } finally {
+    await s.close()
+  }
+})
+
+test('a topic containing a comma survives percent-encoding', async () => {
+  // URLSearchParams decodes on access, which would split "a%2Cb" into two topics.
+  const s = await boot()
+  try {
+    const stream = await openStream(s.base, `topics=${encodeURIComponent('a,b')}`)
+    await stream.waitFor((f) => f === ':ok\n\n')
+    await s.hub.publish('a,b', 'yes')
+    const frame = await stream.waitFor((f) => f.startsWith('id: '))
+    assert.match(frame, /event: a,b\n/)
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
+// ------------------------------------------------------------------ §4.3 authz
+
+test('403 only when every requested topic is denied', async () => {
+  const s = await boot({}, { authorize: (_req, topic) => topic.startsWith('org/42/') })
+  try {
+    const denied = await fetch(`${s.base}/events?topics=${encodeURIComponent('org/99/a')}`)
+    assert.equal(denied.status, 403)
+
+    const ok = await fetch(`${s.base}/events?topics=${encodeURIComponent('org/42/a')}`)
+    assert.equal(ok.status, 200)
+    await ok.body.cancel()
+  } finally {
+    await s.close()
+  }
+})
+
+test('partial denial opens the stream and names the refused topics', async () => {
+  const s = await boot({}, { authorize: (_req, topic) => topic.startsWith('org/42/') })
+  try {
+    const stream = await openStream(
+      s.base,
+      `topics=${encodeURIComponent('org/42/a')},${encodeURIComponent('org/99/b')}`,
+    )
+    assert.equal(stream.res.status, 200, 'one forbidden topic must not kill the connection')
+
+    const frame = await stream.waitFor((f) => f.startsWith('event: ~denied'))
+    assert.deepEqual(JSON.parse(frame.split('data: ')[1]).topics, ['org/99/b'])
+
+    // The authorized topic still works.
+    await s.hub.publish('org/42/a', 'v')
+    await stream.waitFor((f) => f.startsWith('id: '))
+    // The denied one is not delivered.
+    await s.hub.publish('org/99/b', 'leak')
+    await new Promise((r) => setTimeout(r, 60))
+    assert.equal(dataFrames(stream.frames).length, 1)
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
+test('cross-tenant isolation: a publish reaches only subscribers of that topic', async () => {
+  const s = await boot()
+  try {
+    const a = await openStream(s.base, `topics=${encodeURIComponent('org/1/orders')}`)
+    const b = await openStream(s.base, `topics=${encodeURIComponent('org/2/orders')}`)
+    await a.waitFor((f) => f === ':ok\n\n')
+    await b.waitFor((f) => f === ':ok\n\n')
+
+    await s.hub.publish('org/1/orders', { secret: 'tenant-one' })
+    await a.waitFor((f) => f.startsWith('id: '))
+    await new Promise((r) => setTimeout(r, 60))
+
+    assert.equal(dataFrames(b.frames).length, 0)
+    assert.ok(!b.frames.join('').includes('tenant-one'))
+    a.close(); b.close()
+  } finally {
+    await s.close()
+  }
+})
+
+// ------------------------------------------------------------------ §4.4 headers
+
+test('sends the headers that make the stream survive a proxy', async () => {
+  const s = await boot()
+  try {
+    const stream = await openStream(s.base, 'topics=t')
+    const h = stream.res.headers
+    assert.match(h.get('content-type'), /^text\/event-stream/)
+    assert.equal(h.get('cache-control'), 'no-cache, no-transform')
+    assert.equal(h.get('x-accel-buffering'), 'no')
+    // No cursor was presented, so §4.4 says the checkpoint header must be absent.
+    assert.equal(h.get('last-event-id-checkpoint'), null)
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
+// ------------------------------------------------------- §4.5 replay + checkpoint
+
+test('replays events newer than the cursor and echoes the checkpoint', async () => {
+  const s = await boot()
+  try {
+    const first = await s.hub.publish('t', 'one')
+    await s.hub.publish('t', 'two')
+    await s.hub.publish('t', 'three')
+
+    const stream = await openStream(s.base, `topics=t&last_event_id=${first.id}`)
+    assert.equal(stream.res.headers.get('last-event-id-checkpoint'), first.id)
+
+    await stream.waitFor((f) => f.includes('data: three'))
+    const replayed = dataFrames(stream.frames)
+    assert.equal(replayed.length, 2, 'the cursor event itself is not replayed')
+    assert.ok(replayed[0].includes('data: two'))
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
+test('reports earliest in the header AND a ~gap frame when history has moved on', async () => {
+  const s = await boot({ maxHistoryBytes: 400 })
+  try {
+    const first = await s.hub.publish('t', 'x'.repeat(120))
+    for (let i = 0; i < 20; i++) await s.hub.publish('t', 'x'.repeat(120))
+
+    const stream = await openStream(s.base, `topics=t&last_event_id=${first.id}`)
+    // §8.1 — signalled twice on purpose: the header is authoritative, the frame
+    // survives a header-stripping proxy.
+    assert.equal(stream.res.headers.get('last-event-id-checkpoint'), 'earliest')
+    const gap = await stream.waitFor((f) => f.startsWith('event: ~gap'))
+    assert.equal(JSON.parse(gap.split('data: ')[1]).reason, 'history-truncated')
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
+test('control frames carry no id, so they cannot advance a client cursor', async () => {
+  const s = await boot({ maxHistoryBytes: 400 }, { authorize: (_r, t) => t !== 'nope' })
+  try {
+    const first = await s.hub.publish('t', 'x'.repeat(120))
+    for (let i = 0; i < 20; i++) await s.hub.publish('t', 'x'.repeat(120))
+
+    const stream = await openStream(s.base, `topics=t,nope&last_event_id=${first.id}`)
+    const denied = await stream.waitFor((f) => f.startsWith('event: ~denied'))
+    const gap = await stream.waitFor((f) => f.startsWith('event: ~gap'))
+    assert.ok(!denied.includes('id: '))
+    assert.ok(!gap.includes('id: '))
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
+// ------------------------------------------------------------- §5 cursor endpoint
+
+test('the cursor endpoint reports 0-0 before anything is published, then advances', async () => {
+  const s = await boot()
+  try {
+    let body = await (await fetch(`${s.base}/events/cursor`)).json()
+    assert.equal(body.cursor, '0-0')
+
+    const ack = await s.hub.publish('t', 'v')
+    body = await (await fetch(`${s.base}/events/cursor`)).json()
+    assert.equal(body.cursor, ack.id, 'this is what closes the cold-start window')
+  } finally {
+    await s.close()
+  }
+})
+
+// -------------------------------------------------------- §10 caps and teardown
+
+test('429 with Retry-After once the connection cap is reached', async () => {
+  const s = await boot({ maxConnections: 1 })
+  try {
+    const first = await openStream(s.base, 'topics=t')
+    await first.waitFor((f) => f === ':ok\n\n')
+
+    const second = await fetch(`${s.base}/events?topics=t`)
+    assert.equal(second.status, 429)
+    assert.equal(second.headers.get('retry-after'), '5')
+    await second.body.cancel()
+    first.close()
+  } finally {
+    await s.close()
+  }
+})
+
+test('disconnected clients are removed — 40 open/abort cycles leave nothing behind', async () => {
+  const s = await boot()
+  try {
+    for (let i = 0; i < 40; i++) {
+      const stream = await openStream(s.base, `topics=org/${i}/t`)
+      await stream.waitFor((f) => f === ':ok\n\n')
+      stream.close()
+    }
+    // Give the close events time to land.
+    const deadline = Date.now() + 2000
+    while (s.hub.connectionCount() > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    assert.equal(s.hub.connectionCount(), 0, 'every tab that ever connected would leak')
+  } finally {
+    await s.close()
+  }
+})
+
+test('disconnect(predicate) evicts a session whose authorization has been revoked', async () => {
+  // §4.3 authorizes once, at connect. Without this escape hatch a revoked session
+  // keeps receiving events until the tab closes.
+  const s = await boot({}, {}, (req) => {
+    req.userId = new URL(req.url, 'http://x').searchParams.get('u')
+  })
+  try {
+    const a = await openStream(s.base, 'topics=t&u=alice')
+    const b = await openStream(s.base, 'topics=t&u=bob')
+    await a.waitFor((f) => f === ':ok\n\n')
+    await b.waitFor((f) => f === ':ok\n\n')
+    assert.equal(s.hub.connectionCount(), 2)
+
+    const evicted = s.hub.disconnect((req) => req.userId === 'alice')
+    assert.equal(evicted, 1)
+    assert.equal(s.hub.connectionCount(), 1)
+
+    await s.hub.publish('t', 'after-revocation')
+    await b.waitFor((f) => f.startsWith('id: '))
+    assert.equal(dataFrames(a.frames).length, 0, 'evicted session must receive nothing')
+    a.close(); b.close()
+  } finally {
+    await s.close()
+  }
+})
+
+test('publish reports how many subscribers it reached', async () => {
+  const s = await boot()
+  try {
+    assert.equal((await s.hub.publish('t', 'v')).delivered, 0)
+    const stream = await openStream(s.base, 'topics=t')
+    await stream.waitFor((f) => f === ':ok\n\n')
+    assert.equal((await s.hub.publish('t', 'v')).delivered, 1)
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
+test('non-string payloads are JSON-serialised; strings pass through raw', async () => {
+  const s = await boot()
+  try {
+    const stream = await openStream(s.base, 'topics=t')
+    await stream.waitFor((f) => f === ':ok\n\n')
+
+    await s.hub.publish('t', { total: 4200 })
+    const obj = await stream.waitFor((f) => f.includes('total'))
+    assert.ok(obj.includes('data: {"total":4200}'))
+
+    await s.hub.publish('t', 'plain\nstring')
+    const str = await stream.waitFor((f) => f.includes('plain'))
+    // §6.1 — segmented, not raw, so the newline cannot terminate the frame.
+    assert.ok(str.includes('data: plain\ndata: string\n'))
+    assert.equal(str.split('\n\n').length, 2)
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})

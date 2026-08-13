@@ -1,0 +1,12 @@
+{
+  "name": "pushmount-workspace",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test && node scripts/check-invariants.mjs && node scripts/smoke-example.mjs",
+    "conformance": "node conformance/runner.mjs ./packages/server/dist/conformance-adapter.js",
+    "invariants": "node scripts/check-invariants.mjs",
+    "smoke": "node scripts/smoke-example.mjs",
+    "version:set": "node scripts/set-version.mjs"
+  }
+}

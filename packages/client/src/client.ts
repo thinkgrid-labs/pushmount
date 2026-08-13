@@ -1,0 +1,324 @@
+/**
+ * The connection manager — PROTOCOL.md §9.
+ *
+ * One connection per client, whatever the number of topics. Tracks the cursor,
+ * reconnects with it, dedupes what replay repeats, and reports both loss conditions
+ * through one callback.
+ */
+
+import { SseParser, compareIds } from './parser.js'
+
+export type GapReason = 'history-truncated' | 'slow-consumer'
+export type ClientState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed'
+
+export interface EventMeta {
+  readonly id: string
+  readonly topic: string
+}
+
+export type Handler = (data: string, meta: EventMeta) => void
+
+export interface ClientOptions {
+  /** The mounted path, e.g. `/events`. */
+  url: string
+  /**
+   * §5 — the cursor read alongside the page's initial data.
+   *
+   * Without it the stream starts from "now" and anything published between the data
+   * fetch and the stream opening is lost with nothing reported. That window is on
+   * every first page load, so this is not an optimisation.
+   */
+  initialCursor?: string
+  /** §8 — fires for both loss conditions, at most once per connection attempt. */
+  onGap?: (reason: GapReason, topics: readonly string[]) => void
+  /** §4.3 — topics the server refused; the connection stayed open for the rest. */
+  onDenied?: (topics: readonly string[]) => void
+  onError?: (error: unknown) => void
+  onStateChange?: (state: ClientState) => void
+  /** §9.1 — collapses a render pass worth of mounts into one connection. */
+  debounceMs?: number
+  baseBackoffMs?: number
+  maxBackoffMs?: number
+  /** Injectable for tests and for runtimes with a non-global fetch. */
+  fetch?: typeof globalThis.fetch
+}
+
+export class Client {
+  readonly #options: Required<Omit<ClientOptions, 'initialCursor'>> & { initialCursor?: string }
+  readonly #handlers = new Map<string, Set<Handler>>()
+
+  #cursor: string | undefined
+  #state: ClientState = 'idle'
+  #abort: AbortController | undefined
+  #debounce: ReturnType<typeof setTimeout> | undefined
+  #openTopicsKey = ''
+  #attempt = 0
+  #closed = false
+  /** Diagnostics — the connection-reuse tests assert on this. */
+  #connections = 0
+
+  constructor(options: ClientOptions) {
+    this.#options = {
+      url: options.url,
+      onGap: options.onGap ?? (() => {}),
+      onDenied: options.onDenied ?? (() => {}),
+      onError: options.onError ?? (() => {}),
+      onStateChange: options.onStateChange ?? (() => {}),
+      debounceMs: options.debounceMs ?? 10,
+      baseBackoffMs: options.baseBackoffMs ?? 500,
+      maxBackoffMs: options.maxBackoffMs ?? 30_000,
+      fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
+      ...(options.initialCursor !== undefined && { initialCursor: options.initialCursor }),
+    }
+    this.#cursor = options.initialCursor
+  }
+
+  get state(): ClientState {
+    return this.#state
+  }
+
+  get cursor(): string | undefined {
+    return this.#cursor
+  }
+
+  get connectionCount(): number {
+    return this.#connections
+  }
+
+  subscribe(topic: string, handler: Handler): () => void {
+    let set = this.#handlers.get(topic)
+    if (set === undefined) {
+      set = new Set()
+      this.#handlers.set(topic, set)
+    }
+    set.add(handler)
+    this.#scheduleSync()
+
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const current = this.#handlers.get(topic)
+      if (current === undefined) return
+      current.delete(handler)
+      if (current.size === 0) this.#handlers.delete(topic)
+      this.#scheduleSync()
+    }
+  }
+
+  close(): void {
+    this.#closed = true
+    if (this.#debounce !== undefined) clearTimeout(this.#debounce)
+    this.#abort?.abort()
+    this.#abort = undefined
+    this.#setState('closed')
+  }
+
+  // ---------------------------------------------------------------- internals
+
+  #setState(state: ClientState): void {
+    if (this.#state === state) return
+    this.#state = state
+    this.#options.onStateChange(state)
+  }
+
+  #topics(): string[] {
+    // Sorted so that the same set derived in a different mount order does not read as
+    // a change and trigger a pointless reconnect.
+    return [...this.#handlers.keys()].sort()
+  }
+
+  /** §9.1 — debounced, so ten components mounting in one pass open one connection. */
+  #scheduleSync(): void {
+    if (this.#closed) return
+    if (this.#debounce !== undefined) clearTimeout(this.#debounce)
+    this.#debounce = setTimeout(() => {
+      this.#debounce = undefined
+      void this.#sync()
+    }, this.#options.debounceMs)
+    // Node only: never hold the process open for a debounce tick.
+    ;(this.#debounce as { unref?: () => void }).unref?.()
+  }
+
+  async #sync(): Promise<void> {
+    if (this.#closed) return
+    const key = this.#topics().join(',')
+    if (key === this.#openTopicsKey && this.#abort !== undefined) return
+
+    this.#abort?.abort()
+    this.#abort = undefined
+    this.#openTopicsKey = key
+
+    if (key === '') {
+      this.#setState('idle')
+      return
+    }
+    this.#attempt = 0
+    void this.#run(key)
+  }
+
+  /** §9.3, §9.4 — the connect/read/backoff loop for one topic set. */
+  async #run(key: string): Promise<void> {
+    while (!this.#closed && this.#openTopicsKey === key) {
+      const controller = new AbortController()
+      this.#abort = controller
+      this.#setState(this.#attempt === 0 ? 'connecting' : 'reconnecting')
+
+      let gapFired = false
+      const reportGap = (reason: GapReason, topics: readonly string[]): void => {
+        // §8.1 — history-truncated is signalled by both a header and a frame on
+        // purpose. The application must see it once.
+        if (gapFired) return
+        gapFired = true
+        this.#options.onGap(reason, topics)
+      }
+
+      try {
+        const topics = this.#topics()
+        const res = await this.#connect(topics, controller.signal)
+        this.#connections++
+
+        if (!res.ok) {
+          if (res.status === 400 || res.status === 403) {
+            // Not transient. Retrying cannot fix a rejected topic or a denied one.
+            this.#options.onError(
+              new Error(`pushmount: stream rejected with ${res.status}`),
+            )
+            this.#setState('closed')
+            return
+          }
+          const retryAfter = Number(res.headers.get('retry-after'))
+          await this.#sleep(
+            Number.isFinite(retryAfter) && retryAfter > 0
+              ? retryAfter * 1000
+              : this.#backoff(),
+          )
+          this.#attempt++
+          continue
+        }
+
+        // §4.4 — the whole reason this client is built on fetch rather than
+        // EventSource: the checkpoint is only readable here.
+        if (res.headers.get('last-event-id-checkpoint') === 'earliest') {
+          reportGap('history-truncated', topics)
+        }
+
+        this.#setState('open')
+        this.#attempt = 0
+        await this.#read(res, reportGap, topics)
+      } catch (error) {
+        if (controller.signal.aborted || this.#closed) return
+        this.#options.onError(error)
+      }
+
+      if (this.#closed || this.#openTopicsKey !== key) return
+      await this.#sleep(this.#backoff())
+      this.#attempt++
+    }
+  }
+
+  #connect(topics: readonly string[], signal: AbortSignal): Promise<Response> {
+    // §4.1 — each topic is encoded individually, then joined. Encoding the joined
+    // string instead would escape the separators and produce one absurd topic.
+    const query = new URLSearchParams()
+    const encoded = topics.map(encodeURIComponent).join(',')
+
+    const headers: Record<string, string> = { accept: 'text/event-stream' }
+    let url = `${this.#options.url}?topics=${encoded}`
+    if (this.#cursor !== undefined) {
+      headers['last-event-id'] = this.#cursor
+      // §4.1 — the query fallback is sent too, so a runtime that strips the header
+      // still resumes rather than silently restarting from now.
+      query.set('last_event_id', this.#cursor)
+      url += `&${query.toString()}`
+    }
+
+    return this.#options.fetch(url, { headers, signal, cache: 'no-store' })
+  }
+
+  async #read(
+    res: Response,
+    reportGap: (reason: GapReason, topics: readonly string[]) => void,
+    topics: readonly string[],
+  ): Promise<void> {
+    if (res.body === null) return
+    const reader = res.body.getReader()
+    const parser = new SseParser()
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        const events = done ? parser.end() : parser.push(value)
+
+        for (const event of events) {
+          if (event.event !== undefined && event.event.charCodeAt(0) === 126) {
+            this.#control(event.event, event.data, reportGap, topics)
+            continue
+          }
+          if (event.event === undefined || event.id === undefined) continue
+
+          // §9.2 — replay can repeat what we already delivered, because the server
+          // registers the subscriber before snapshotting history.
+          if (this.#cursor !== undefined && compareIds(event.id, this.#cursor) <= 0) continue
+          this.#cursor = event.id
+
+          const set = this.#handlers.get(event.event)
+          if (set === undefined) continue
+          for (const handler of [...set]) {
+            try {
+              handler(event.data, { id: event.id, topic: event.event })
+            } catch (error) {
+              // One misbehaving component must not tear down the shared connection.
+              this.#options.onError(error)
+            }
+          }
+        }
+        if (done) return
+      }
+    } finally {
+      reader.cancel().catch(() => {})
+    }
+  }
+
+  #control(
+    name: string,
+    data: string,
+    reportGap: (reason: GapReason, topics: readonly string[]) => void,
+    topics: readonly string[],
+  ): void {
+    let parsed: { reason?: string; topics?: string[] } = {}
+    try {
+      parsed = JSON.parse(data) as typeof parsed
+    } catch {
+      return // §11 — an unparseable control frame is ignored, not fatal.
+    }
+
+    if (name === '~gap') {
+      const reason: GapReason = parsed.reason === 'slow-consumer' ? 'slow-consumer' : 'history-truncated'
+      reportGap(reason, parsed.topics ?? topics)
+    } else if (name === '~denied') {
+      this.#options.onDenied(parsed.topics ?? [])
+    }
+    // §11 — any other `~` frame is ignored, which is what lets new ones be added.
+  }
+
+  /** §9.4 — exponential with equal jitter, capped. */
+  #backoff(): number {
+    const ceiling = Math.min(
+      this.#options.maxBackoffMs,
+      this.#options.baseBackoffMs * 2 ** Math.min(this.#attempt, 20),
+    )
+    return ceiling / 2 + Math.random() * (ceiling / 2)
+  }
+
+  #sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, ms)
+      ;(t as { unref?: () => void }).unref?.()
+    })
+  }
+}
+
+export function createClient(options: ClientOptions): Client {
+  return new Client(options)
+}

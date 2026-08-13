@@ -1,0 +1,19 @@
+{
+  "name": "@pushmount/client",
+  "version": "0.1.0-rc.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@pushmount/server": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
