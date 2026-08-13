@@ -1,5 +1,5 @@
 {
-  "name": "@pushmount/client",
+  "name": "@pushmount/redis",
   "version": "0.1.0-rc.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,10 +11,16 @@
     "build": "tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.json && node --test"
   },
-  "devDependencies": {
-    "@pushmount/server": "workspace:*",
-    "@types/node": "^22.0.0",
-    "typescript": "^5.6.0"
+  "dependencies": {
+    "@pushmount/server": "workspace:*"
   },
-  "license": "MIT OR Apache-2.0"
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "ioredis": "^5.11.1",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  }
 }

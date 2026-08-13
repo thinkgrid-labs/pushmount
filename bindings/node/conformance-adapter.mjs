@@ -1,0 +1,23 @@
+// Adapts the native binding to conformance/runner.mjs.
+//
+// This is the point of the whole exercise: the Rust core, called from Node, must agree
+// byte-for-byte with the same corpus the TypeScript hub passes.
+import { createRequire } from 'node:module'
+
+const require = createRequire(import.meta.url)
+const native = require('./dist/pushmount.node')
+
+export const encodeFrame = (ms, seq, topic, payload) =>
+  new Uint8Array(native.encodeFrame(ms, seq, topic, payload))
+
+export const validTopic = (topic) => native.validateTopic(topic)
+
+export const compareIds = ([msA, seqA], [msB, seqB]) =>
+  native.compareIds(`${msA}-${seqA}`, `${msB}-${seqB}`)
+
+export function newHub() {
+  const hub = new native.Hub({})
+  return {
+    publish: (nowMs, topic, payload) => new Uint8Array(hub.publish(nowMs, topic, payload).frame),
+  }
+}

@@ -170,7 +170,29 @@ export class Hub {
     if (!validTopic(topic)) {
       throw new TypeError(`invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
     }
-    const id = this.#nextId(nowMs)
+    return this.append(this.#nextId(nowMs), topic, payload)
+  }
+
+  /**
+   * Appends an event whose id was assigned elsewhere.
+   *
+   * A backplane owns id assignment, not just transport: per-process counters collide,
+   * so two pods would mint the same `<ms>-<seq>` and a client's dedupe would silently
+   * discard real events. With Redis the id comes from `XADD`, which is why §2 fixed
+   * that format in the first place.
+   *
+   * The local sequence is advanced past the supplied id so that a later fall back to
+   * local assignment — a backplane outage, say — cannot mint an id that has already
+   * been used.
+   */
+  append(id: EventId, topic: string, payload: string): { id: EventId; frame: Uint8Array } {
+    if (!validTopic(topic)) {
+      throw new TypeError(`invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
+    }
+    if (compareIds(id, { ms: this.#lastMs, seq: this.#lastSeq }) > 0) {
+      this.#lastMs = id.ms
+      this.#lastSeq = id.seq
+    }
     const frame = encodeFrame(id.ms, id.seq, topic, payload)
 
     this.#history.push({ ms: id.ms, seq: id.seq, topic, frame })

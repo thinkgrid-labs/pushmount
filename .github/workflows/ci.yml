@@ -20,9 +20,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Oldest supported and current. The client needs streaming fetch, which is
-        # why 18 is the floor.
-        node: [20, 22]
+        # Active LTS and current. Node 20 reached end of life on 2026-04-30, and
+        # testing it would be claiming support we do not intend to maintain.
+        node: [22, 24]
+    # Redis is optional for users, so the backplane tests skip themselves without it.
+    # CI runs them, because "optional" must not mean "untested".
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -35,6 +46,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       - run: pnpm -r test
+        env:
+          REDIS_PORT: 6379
 
   # The corpus is the contract between implementations (PROTOCOL.md §12). It runs as
   # its own job so a failure names itself in the checks list rather than hiding inside
@@ -54,22 +67,65 @@ jobs:
       - run: pnpm -r build
       - name: conformance corpus (javascript)
         run: pnpm conformance
+      # The same corpus, through the Rust core's Node binding. This is what proves the
+      # two implementations agree — and it is the gate every future language binding
+      # will pass through before it ships.
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build the node binding
+        run: |
+          cargo build --release -p pushmount-node
+          mkdir -p bindings/node/dist
+          cp target/release/libpushmount_node.so bindings/node/dist/pushmount.node
+      - name: conformance corpus (rust core, via node)
+        run: node conformance/runner.mjs ./bindings/node/conformance-adapter.mjs
+      - name: the node suite against the rust core
+        working-directory: packages/server
+        run: node --test "test/native-parity.test.mjs"
       - name: corpus is regenerable and committed in sync
         run: |
           node conformance/build-vectors.mjs
           git diff --exit-code conformance/vectors.json \
             || (echo "::error::vectors.json is out of sync with build-vectors.mjs" && exit 1)
 
-  # The Rust half reads the same vectors.json. Once pushmount-core lands in v0.3 this
-  # job is what proves the two implementations have not drifted.
+  # `core/` reads the same vectors.json the JavaScript runner does. Once the bindings
+  # land (DECISIONS.md D3) this job is what proves every language agrees.
   conformance-rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: conformance corpus (rust)
-        working-directory: spikes/wasm-vs-ts/core-rs
         run: cargo test --release
+
+  # The C ABI is the only place in the project with unsafe code, and a C ABI cannot be
+  # written without it. Miri executes those paths looking for undefined behaviour —
+  # out-of-bounds reads, use-after-free, invalid aliasing — rather than trusting review.
+  miri:
+    name: verify the unsafe (miri)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - run: cargo miri test -p pushmount-abi
+
+  # core/ must never acquire unsafe. If this fails, protocol logic has moved into the
+  # ABI layer or the forbid attribute has been removed.
+  core-is-safe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # forbid(unsafe_code) is compiler-enforced: unsafe in core/ simply will not
+      # build. So the only thing that can go wrong is the attribute being deleted, and
+      # that is what this guards.
+      - name: core keeps forbid(unsafe_code)
+        run: |
+          grep -q '#!\[forbid(unsafe_code)\]' core/src/lib.rs \
+            || (echo "::error::core/src/lib.rs must keep #![forbid(unsafe_code)]" && exit 1)
+      - name: and it still compiles under it
+        run: cargo build -p pushmount-core
 
   invariants:
     runs-on: ubuntu-latest

@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsc -p tsconfig.json && node --test \"test/*.test.mjs\""
+    "test": "tsc -p tsconfig.json && node --test"
   },
   "peerDependencies": {
     "react": ">=18"
@@ -27,5 +27,6 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "typescript": "^5.9.3"
-  }
+  },
+  "license": "MIT OR Apache-2.0"
 }

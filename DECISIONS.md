@@ -5,10 +5,66 @@ Newest first.
 
 ---
 
+## D3 — One Rust core, in-process bindings per language
+
+**Date:** 13 August 2026 · **Status:** accepted · **Supersedes:** D2
+
+### Why D2 is reversed
+
+D2 was decided correctly against the wrong premise. It asked "does the *Node* hub need
+Rust?" and answered no, on measurements that still stand. The actual goal is broader:
+**the same in-process hub in Python, Go and Ruby, not only Node.**
+
+That changes what the cost buys. D2 priced a ~2x slowdown on Node's hot path against
+avoiding *one* extra implementation, and correctly called that a bad trade. Against
+avoiding *five* hand-written hubs — each with its own version of the id rules, the
+injection defence and the checkpoint atomicity — it is a good one. 37k publishes/sec
+with 37x headroom is affordable in any of them.
+
+The conformance corpus also scales worse than assumed. It works well across two
+implementations. Across five it becomes the only thing standing between the project and
+five subtly different definitions of "newer than the cursor" — and vector T15 is the
+proof that this class of bug recurs independently per language, because every language
+has its own wrong answer for "length".
+
+### Decision
+
+1. **`core/` is a Rust crate** owning everything the corpus pins: ids, topic validation,
+   frame encoding, the history ring, the subscriber registry, checkpoint-and-replay, and
+   backpressure decisions. No IO.
+2. **A stable C ABI** is the single surface every language binds to, with idiomatic
+   wrappers above it (napi for Node, PyO3, cgo, magnus). This is the SQLite/libgit2
+   shape and it exists because the ABI is the expensive thing to change, not the core.
+3. **HTTP stays per-language.** Sockets, headers and framework integration are not
+   portable and should not be forced through FFI. Only the protocol is shared.
+4. **The existing 93 Node tests are the acceptance suite for the core.** Swapping the
+   TypeScript hub internals for the Rust core must leave every one of them passing,
+   unchanged. That is a far stronger completeness check than new Rust tests written in
+   isolation would be.
+
+### The consequence that reorders the roadmap
+
+**The backplane stops being a v0.3 feature and becomes a prerequisite for the second
+binding.**
+
+Node applications are commonly single-process. Gunicorn and Puma are multi-*worker* by
+default — that is the recommended configuration, not an edge case. An in-process hub in
+a Django app under four workers delivers each publish to a quarter of its subscribers,
+silently. The startup warning added in P5 would fire on a normal deployment rather than
+an unusual one, which makes it noise instead of a signal.
+
+So: Redis backplane before Python or Ruby ships, not after.
+
+**PHP is out.** PHP-FPM's request-per-process model cannot hold a long-lived connection
+at all. Say so in the README rather than leaving people to discover it.
+
+---
+
 ## D2 — The Node hub is TypeScript. Rust is for the standalone hub.
 
-**Date:** 13 August 2026 · **Status:** **accepted** · **Supersedes:** the build plan's
-"ship wasm-only" recommendation · **Evidence:** `spikes/wasm-vs-ts/`
+**Date:** 13 August 2026 · **Status:** **superseded by D3** — the measurements below
+remain valid; the premise they were applied to did not · **Evidence:**
+`spikes/wasm-vs-ts/`
 
 ### What was claimed
 

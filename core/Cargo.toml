@@ -1,0 +1,12 @@
+[package]
+name = "pushmount-core"
+description = "Protocol core for pushmount: ids, topics, SSE framing, history and subscriber bookkeeping. No IO."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dev-dependencies]
+serde_json = "1"

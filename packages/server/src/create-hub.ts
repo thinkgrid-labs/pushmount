@@ -7,8 +7,9 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { Hub, type EventId, encodeControl, formatId, parseId, validTopic } from './hub.js'
-import { Registry } from './registry.js'
+import { CoreError, type HubCore } from './core.js'
+import { createTsCore } from './core-ts.js'
+import type { Backplane } from './backplane.js'
 
 const encoder = new TextEncoder()
 const FRAME_OK = encoder.encode(':ok\n\n')
@@ -41,6 +42,22 @@ export interface CreateHubOptions {
    * warning and accept that publishes will not cross process boundaries.
    */
   suppressClusterWarning?: boolean
+  /**
+   * The protocol implementation to run on.
+   *
+   * Defaults to the zero-dependency TypeScript core. Supplying the Rust core through
+   * its Node binding swaps the implementation without changing anything below — which
+   * is exactly what makes this whole test suite the core's acceptance suite.
+   */
+  core?: HubCore
+  /**
+   * Makes a publish in this process reach subscribers in every other one.
+   *
+   * Without it the hub is single-process only, and a publish silently reaches a
+   * fraction of your subscribers — which is why `createHub` warns at startup when it
+   * can tell it is one worker of several.
+   */
+  backplane?: Backplane
 }
 
 /**
@@ -71,6 +88,19 @@ export interface HandlerOptions<Req> {
   authorize?: (req: Req, topic: string) => boolean | Promise<boolean>
   /** §10 — groups connections for the per-key cap, typically by user id. */
   connectionKey?: (req: Req) => string | undefined
+  /**
+   * Extracts the underlying Node request from a framework's request object.
+   *
+   * Two different things are needed from a request, and only Express happens to
+   * provide both on one object. Socket options and close events need the real
+   * `IncomingMessage`; `authorize` needs whatever the framework decorated — Fastify
+   * puts `request.user` on its own wrapper and the raw request never sees it. Passing
+   * the raw request to `authorize` would silently hand every callback an object with
+   * no user on it, and `authorize` would deny everything (or, worse, allow it).
+   *
+   * Defaults to identity, which is correct for Express and plain `node:http`.
+   */
+  toNodeRequest?: (req: Req) => IncomingMessage
 }
 
 export interface PublishAck {
@@ -81,25 +111,39 @@ export interface PublishAck {
 
 interface Connection {
   readonly id: number
-  readonly req: IncomingMessage
+  /**
+   * Frames that arrived before this connection finished opening.
+   *
+   * With a backplane, replay is fetched over the network, so the handler must await
+   * inside what §4.5 calls the atomic block. The subscriber is registered *before* that
+   * await — otherwise events published during it are lost — which means a live frame
+   * can arrive before `writeHead`. Queuing it here and flushing after replay keeps the
+   * response well-formed; the client dedupes any overlap by id, which is the same trade
+   * §4.5 already makes locally, extended across the network.
+   */
+  pending: Uint8Array[] | null
+  /** Owns the socket and the close events. */
+  readonly nodeReq: IncomingMessage
+  /** What the framework decorated — what `disconnect` predicates inspect. */
+  readonly appReq: unknown
   readonly res: ServerResponse
   readonly topics: readonly string[]
 }
 
 export function createHub(options: CreateHubOptions = {}) {
-  const hub = new Hub(
-    options.maxHistoryBytes === undefined ? {} : { maxHistoryBytes: options.maxHistoryBytes },
-  )
-  const registry = new Registry({
-    ...(options.maxBufferBytes !== undefined && { maxBufferBytes: options.maxBufferBytes }),
-    ...(options.maxConnections !== undefined && { maxConnections: options.maxConnections }),
-    ...(options.maxConnectionsPerKey !== undefined && {
-      maxConnectionsPerKey: options.maxConnectionsPerKey,
-    }),
-    ...(options.maxTopicsPerConnection !== undefined && {
-      maxTopicsPerConnection: options.maxTopicsPerConnection,
-    }),
-  })
+  const core =
+    options.core ??
+    createTsCore({
+      ...(options.maxHistoryBytes !== undefined && { maxHistoryBytes: options.maxHistoryBytes }),
+      ...(options.maxBufferBytes !== undefined && { maxBufferBytes: options.maxBufferBytes }),
+      ...(options.maxConnections !== undefined && { maxConnections: options.maxConnections }),
+      ...(options.maxConnectionsPerKey !== undefined && {
+        maxConnectionsPerKey: options.maxConnectionsPerKey,
+      }),
+      ...(options.maxTopicsPerConnection !== undefined && {
+        maxTopicsPerConnection: options.maxTopicsPerConnection,
+      }),
+    })
 
   const now = options.now ?? Date.now
   const keepAliveMs = options.keepAliveMs ?? 20_000
@@ -120,6 +164,20 @@ export function createHub(options: CreateHubOptions = {}) {
           `suppressClusterWarning.\n`,
       )
     }
+  }
+
+  const backplane = options.backplane
+  if (backplane !== undefined) {
+    backplane.onEvent((event) => {
+      try {
+        // Appending with the backplane's id keeps local history and the shared log in
+        // agreement, so a cursor means the same thing in every process.
+        const { frame, targets } = core.append(event.id, event.topic, event.payload)
+        fanOut(frame, targets)
+      } catch (error) {
+        onError(error)
+      }
+    })
   }
 
   // §6.2 — one shared interval rather than a timer per subscriber. N timers is the
@@ -146,7 +204,7 @@ export function createHub(options: CreateHubOptions = {}) {
     const conn = connections.get(id)
     if (conn === undefined) return
     connections.delete(id)
-    registry.remove(id)
+    core.remove(id)
     try {
       if (endFrame !== undefined) conn.res.write(endFrame)
       conn.res.end()
@@ -156,15 +214,37 @@ export function createHub(options: CreateHubOptions = {}) {
     maybeStopKeepAlive()
   }
 
+  /** Writes a frame to every matching subscriber. Returns how many were reached. */
+  function fanOut(frame: Uint8Array, targets: readonly number[]): number {
+    let delivered = 0
+    for (const subId of targets) {
+      const conn = connections.get(subId)
+      if (conn === undefined) continue
+      writeTo(conn, frame)
+      delivered++
+    }
+    return delivered
+  }
+
+  /** How many local subscribers a topic has, for the publish acknowledgement. */
+  function deliveredFor(topic: string): number {
+    let n = 0
+    for (const conn of connections.values()) {
+      if (conn.topics.includes(topic)) n++
+    }
+    return n
+  }
+
   function writeTo(conn: Connection, frame: Uint8Array): void {
+    if (conn.pending !== null) {
+      conn.pending.push(frame)
+      return
+    }
     conn.res.write(frame)
     // §8.2 — the socket is the only thing that knows the true outstanding depth.
-    const verdict = registry.noteBuffer(conn.id, conn.res.writableLength)
+    const verdict = core.noteBuffer(conn.id, conn.res.writableLength)
     if (verdict === 'slow-consumer') {
-      drop(
-        conn.id,
-        encodeControl('gap', { reason: 'slow-consumer', topics: conn.topics }),
-      )
+      drop(conn.id, core.slowConsumerFrame(conn.id))
     }
   }
 
@@ -179,17 +259,27 @@ export function createHub(options: CreateHubOptions = {}) {
     publish(topic: string, data: unknown): Promise<PublishAck> {
       try {
         if (closed) throw new Error('hub is closed')
-        const payload = typeof data === 'string' ? data : JSON.stringify(data)
-        const { id, frame } = hub.publish(now(), topic, payload ?? '')
+        const payload = (typeof data === 'string' ? data : JSON.stringify(data)) ?? ''
 
-        let delivered = 0
-        for (const subId of registry.match(topic)) {
-          const conn = connections.get(subId)
-          if (conn === undefined) continue
-          writeTo(conn, frame)
-          delivered++
+        if (backplane !== undefined) {
+          // Validate before the round trip, so a bad topic fails fast and locally
+          // rather than after a network hop.
+          if (!core.validTopic(topic)) {
+            throw new TypeError(`invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
+          }
+          // Delivery happens when this event comes back through onEvent, along with
+          // every other process's. One ordering, everywhere.
+          return backplane.publish(topic, payload).then(
+            (id) => ({ id, delivered: deliveredFor(topic) }),
+            (error) => {
+              onError(error)
+              throw error
+            },
+          )
         }
-        return Promise.resolve({ id: formatId(id), delivered })
+
+        const { id, frame, targets } = core.publish(now(), topic, payload)
+        return Promise.resolve({ id, delivered: fanOut(frame, targets) })
       } catch (error) {
         onError(error)
         return Promise.reject(error instanceof Error ? error : new Error(String(error)))
@@ -198,7 +288,7 @@ export function createHub(options: CreateHubOptions = {}) {
 
     /** §5 — the current cursor, for closing the cold-start window. */
     cursor(): string {
-      return hub.cursor()
+      return core.cursor()
     },
 
     connectionCount(): number {
@@ -213,10 +303,10 @@ export function createHub(options: CreateHubOptions = {}) {
      * closes — unlike the polling it replaces, which re-authorized every request. This
      * is the escape hatch: call it from logout and permission-change paths.
      */
-    disconnect(predicate: (req: IncomingMessage) => boolean): number {
+    disconnect<Req = IncomingMessage>(predicate: (req: Req) => boolean): number {
       let n = 0
       for (const conn of [...connections.values()]) {
-        if (predicate(conn.req)) {
+        if (predicate(conn.appReq as Req)) {
           drop(conn.id)
           n++
         }
@@ -237,15 +327,27 @@ export function createHub(options: CreateHubOptions = {}) {
     cursorHandler() {
       return (_req: IncomingMessage, res: ServerResponse): void => {
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-        res.end(JSON.stringify({ cursor: hub.cursor() }))
+        res.end(JSON.stringify({ cursor: core.cursor() }))
       }
     },
 
     /** §4 — the stream endpoint. Express-compatible; works with plain node:http too. */
-    handler<Req extends IncomingMessage>(handlerOptions: HandlerOptions<Req> = {}) {
+    handler<Req = IncomingMessage>(
+      // When `Req` is not an IncomingMessage, `toNodeRequest` stops being optional.
+      // Forgetting it would hand `authorize` a raw request with none of the
+      // framework's decorations on it — so the compiler asks for it instead.
+      options?: HandlerOptions<Req> &
+        (Req extends IncomingMessage ? unknown : { toNodeRequest: (req: Req) => IncomingMessage }),
+    ) {
+      const handlerOptions = (options ?? {}) as HandlerOptions<Req>
       const { authorize, connectionKey } = handlerOptions
+      const toNode = handlerOptions.toNodeRequest ?? ((r: Req) => r as IncomingMessage)
 
-      return async (req: Req, res: ServerResponse): Promise<void> => {
+      return async (appReq: Req, res: ServerResponse): Promise<void> => {
+        // `appReq` is what the framework decorated and what `authorize` sees.
+        // `req` is the Node request that owns the socket and the close events.
+        const req = toNode(appReq)
+
         // ---- §4.1 parse -------------------------------------------------------
         const search = req.url === undefined ? '' : req.url.slice(req.url.indexOf('?') + 1)
         const rawTopics = rawParam(search, 'topics')
@@ -260,7 +362,7 @@ export function createHub(options: CreateHubOptions = {}) {
           return fail(res, 400, 'topics contains malformed percent-encoding')
         }
         for (const topic of topics) {
-          if (!validTopic(topic)) {
+          if (!core.validTopic(topic)) {
             return fail(res, 400, `invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
           }
         }
@@ -268,13 +370,7 @@ export function createHub(options: CreateHubOptions = {}) {
         // §4.1 — the header wins when both are present.
         const headerCursor = header(req, 'last-event-id')
         const rawCursor = headerCursor ?? decodeOrNull(rawParam(search, 'last_event_id'))
-        let cursor: EventId | null = null
-        if (rawCursor !== null && rawCursor !== '') {
-          cursor = parseId(rawCursor)
-          // A malformed cursor must not be silently downgraded to "no cursor" — the
-          // client would believe it resumed and would never be told it did not.
-          if (cursor === null) return fail(res, 400, 'malformed cursor')
-        }
+        const cursor = rawCursor === null || rawCursor === '' ? undefined : rawCursor
 
         // ---- §4.3 authorize ---------------------------------------------------
         const allowed: string[] = []
@@ -285,7 +381,7 @@ export function createHub(options: CreateHubOptions = {}) {
           for (const topic of topics) {
             let ok = false
             try {
-              ok = await authorize(req, topic)
+              ok = await authorize(appReq, topic)
             } catch (error) {
               onError(error)
               return fail(res, 500, 'authorization failed')
@@ -301,14 +397,50 @@ export function createHub(options: CreateHubOptions = {}) {
         // NO `await` MAY APPEAR BETWEEN HERE AND THE END OF THIS BLOCK. Registration,
         // the checkpoint decision and the replay snapshot must describe one instant;
         // an await lets a publish land in between, and the gap goes unreported.
-        const key = connectionKey?.(req)
-        const added = registry.add(allowed, key)
-        if (!added.ok) {
-          const status = added.reason === 'too-many-topics' ? 400 : 429
-          return fail(res, status, added.reason, status === 429 ? { 'retry-after': '5' } : {})
+        const key = connectionKey?.(appReq)
+        let subscribed
+        try {
+          subscribed = core.subscribe(allowed, key, cursor)
+        } catch (error) {
+          const reason = error instanceof CoreError ? error.reason : 'invalid-topic'
+          // A malformed cursor is a 400, never a silent downgrade to "no cursor": the
+          // client would believe it resumed and would never be told otherwise.
+          const status =
+            reason === 'max-connections' || reason === 'max-connections-per-key' ? 429 : 400
+          return fail(res, status, reason, status === 429 ? { 'retry-after': '5' } : {})
         }
+        // The subscriber is registered now. From here a live frame may arrive at any
+        // time, so it goes to `conn.pending` until the response is fully opened.
+        const conn: Connection = {
+          id: subscribed.id,
+          nodeReq: req,
+          appReq,
+          res,
+          topics: allowed,
+          pending: [],
+        }
+        connections.set(subscribed.id, conn)
 
-        const { truncated, frames } = hub.checkpointAndReplay(cursor, allowed)
+        let truncated = subscribed.checkpoint === 'earliest'
+        let replay: readonly Uint8Array[] = subscribed.replay
+
+        if (backplane !== undefined && cursor !== undefined) {
+          // Shared history, because the client may have reconnected to a different
+          // process than the one that served it last. This awaits inside what §4.5
+          // calls the atomic block — which is only safe because registration happened
+          // above, so nothing published during the round trip is lost. It may be
+          // delivered twice instead, and the client dedupes by id.
+          try {
+            const shared = await backplane.replay(cursor, allowed)
+            truncated = shared.truncated
+            replay = shared.events.map((e) => core.append(e.id, e.topic, e.payload).frame)
+          } catch (error) {
+            onError(error)
+            // A backplane that cannot answer must not be reported as "nothing missed".
+            truncated = true
+            replay = []
+          }
+        }
 
         const headers: Record<string, string> = {
           'content-type': 'text/event-stream; charset=utf-8',
@@ -316,8 +448,8 @@ export function createHub(options: CreateHubOptions = {}) {
           'x-accel-buffering': 'no',
         }
         if (req.httpVersionMajor === 1) headers['connection'] = 'keep-alive'
-        if (cursor !== null) {
-          headers['last-event-id-checkpoint'] = truncated ? 'earliest' : formatId(cursor)
+        if (cursor !== undefined) {
+          headers['last-event-id-checkpoint'] = truncated ? 'earliest' : cursor
         }
         res.writeHead(200, headers)
         res.flushHeaders?.()
@@ -327,20 +459,21 @@ export function createHub(options: CreateHubOptions = {}) {
         req.socket?.setTimeout(0)
         res.setTimeout?.(0)
 
-        const conn: Connection = { id: added.id, req, res, topics: allowed }
-        connections.set(added.id, conn)
         ensureKeepAlive()
 
         res.write(FRAME_OK)
-        if (denied.length > 0) res.write(encodeControl('denied', { topics: denied }))
-        if (truncated) {
-          res.write(encodeControl('gap', { reason: 'history-truncated', topics: allowed }))
-        }
-        for (const frame of frames) res.write(frame)
+        if (denied.length > 0) res.write(core.deniedFrame(denied))
+        if (truncated) res.write(core.truncatedFrame(subscribed.id))
+        for (const frame of replay) res.write(frame)
+
+        // Anything that arrived while replay was in flight, in the order it arrived.
+        const queued = conn.pending ?? []
+        conn.pending = null
+        for (const frame of queued) res.write(frame)
         // ---- end of the atomic block -----------------------------------------
 
         // §8.2 — both events, or every tab that ever connected leaks a subscriber.
-        const teardown = (): void => drop(added.id)
+        const teardown = (): void => drop(subscribed.id)
         res.on('close', teardown)
         req.on('close', teardown)
         res.on('error', teardown)

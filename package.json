@@ -8,5 +8,6 @@
     "invariants": "node scripts/check-invariants.mjs",
     "smoke": "node scripts/smoke-example.mjs",
     "version:set": "node scripts/set-version.mjs"
-  }
+  },
+  "license": "MIT OR Apache-2.0"
 }

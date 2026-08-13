@@ -29,6 +29,23 @@ export {
 export { Registry, type RegistryOptions, type AddResult } from './registry.js'
 
 export {
+  type HubCore,
+  type CoreConfig,
+  type CheckpointKind,
+  type BufferKind,
+  CoreError,
+} from './core.js'
+
+export type {
+  Backplane,
+  BackplaneEvent,
+  BackplaneReplay,
+} from './backplane.js'
+
+export { createTsCore } from './core-ts.js'
+export { createNativeCore, type NativeModule } from './core-native.js'
+
+export {
   createHub,
   type CreateHubOptions,
   type HandlerOptions,
