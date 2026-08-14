@@ -3,8 +3,9 @@
 //   node runner.mjs <path-to-module>
 //
 // The module under test must export:
-//   encodeFrame(ms, seq, topic, payload) -> Uint8Array
+//   encodeFrame(ms, seq, topic, payload, origin?) -> Uint8Array
 //   validTopic(topic)                    -> boolean
+//   validOrigin(origin)                  -> boolean
 //   compareIds([msA,seqA], [msB,seqB])   -> -1 | 0 | 1
 //   newHub()                             -> { publish(nowMs, topic, payload) -> Uint8Array }
 //
@@ -35,7 +36,7 @@ function check(id, desc, expected, actual) {
 for (const v of vectors.encode) {
   let actual
   try {
-    actual = dec.decode(impl.encodeFrame(v.ms, v.seq, v.topic, v.payload))
+    actual = dec.decode(impl.encodeFrame(v.ms, v.seq, v.topic, v.payload, v.origin))
   } catch (e) {
     actual = `threw: ${e.message}`
   }
@@ -47,6 +48,17 @@ for (const v of vectors.topic) {
   let actual
   try {
     actual = impl.validTopic(v.topic)
+  } catch (e) {
+    actual = `threw: ${e.message}`
+  }
+  check(v.id, v.desc, v.valid, actual)
+}
+
+// ---- §6.0 origin validation
+for (const v of vectors.origin) {
+  let actual
+  try {
+    actual = impl.validOrigin(v.origin)
   } catch (e) {
     actual = `threw: ${e.message}`
   }

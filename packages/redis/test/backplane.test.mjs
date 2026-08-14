@@ -332,3 +332,40 @@ test('a cursor within maxReplay still replays in full', options(), async () => {
     await a.close()
   }
 })
+
+test('an origin survives the backplane, so the right tab skips on every pod', options(), async () => {
+  // §6.0 across processes. The tab that issued the write may be streaming from a
+  // different pod than the one its POST landed on; an origin that only survived locally
+  // would dedupe on one and duplicate on all the others.
+  const a = await node(key('origin'))
+  const b = await node(key('origin'))
+  try {
+    const sub = await openStream(b.base, 'topics=t')
+    await sub.waitFor((f) => f === ':ok\n\n')
+
+    await a.hub.publish('t', 'from-tab-a', { origin: 'tab-a' })
+    const frame = await sub.waitFor((f) => f.startsWith('id: '))
+    assert.match(frame, /\norigin: tab-a\n/)
+    // Field order is normative: id, event, origin, data.
+    assert.match(frame, /^id: [^\n]+\nevent: t\norigin: tab-a\ndata: from-tab-a\n\n$/)
+    sub.close()
+  } finally {
+    await a.close()
+    await b.close()
+  }
+})
+
+test('a publish with no origin crosses the backplane without one', options(), async () => {
+  const a = await node(key('origin-absent'))
+  try {
+    const sub = await openStream(a.base, 'topics=t')
+    await sub.waitFor((f) => f === ':ok\n\n')
+
+    await a.hub.publish('t', 'plain')
+    const frame = await sub.waitFor((f) => f.startsWith('id: '))
+    assert.ok(!frame.includes('origin:'), `origin leaked into: ${JSON.stringify(frame)}`)
+    sub.close()
+  } finally {
+    await a.close()
+  }
+})

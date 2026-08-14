@@ -9,6 +9,11 @@
 
 use pushmount::*;
 
+/// An absent origin — §6.0's optional field, expressed as a null pointer.
+fn none() -> pm_str {
+    pm_str { ptr: std::ptr::null(), len: 0 }
+}
+
 fn s(text: &str) -> pm_str {
     pm_str { ptr: text.as_ptr(), len: text.len() }
 }
@@ -33,7 +38,7 @@ fn publish_produces_a_frame_and_is_freed_cleanly() {
     assert!(!hub.is_null());
 
     let mut result: *mut pm_publish_result = std::ptr::null_mut();
-    let code = pm_publish(hub, 1755083412346, s("org/42/orders"), s(r#"{"id":"ord_918"}"#), &mut result);
+    let code = pm_publish(hub, 1755083412346, s("org/42/orders"), s(r#"{"id":"ord_918"}"#), none(), &mut result);
     assert_eq!(code, PM_OK);
     assert!(!result.is_null());
 
@@ -55,7 +60,7 @@ fn a_payload_containing_a_blank_line_cannot_inject() {
     let hub = pm_hub_new(std::ptr::null());
     let mut result: *mut pm_publish_result = std::ptr::null_mut();
     assert_eq!(
-        pm_publish(hub, 1, s("chat"), s("hello\n\nevent: ~gap\ndata: forged"), &mut result),
+        pm_publish(hub, 1, s("chat"), s("hello\n\nevent: ~gap\ndata: forged"), none(), &mut result),
         PM_OK
     );
     let frame = frame_of(result);
@@ -73,7 +78,7 @@ fn a_payload_may_contain_nul() {
     let hub = pm_hub_new(std::ptr::null());
     let payload = "before\u{0}after";
     let mut result: *mut pm_publish_result = std::ptr::null_mut();
-    assert_eq!(pm_publish(hub, 1, s("t"), s(payload), &mut result), PM_OK);
+    assert_eq!(pm_publish(hub, 1, s("t"), s(payload), none(), &mut result), PM_OK);
     assert!(frame_of(result).contains("before\u{0}after"));
     pm_publish_result_free(result);
     pm_hub_free(hub);
@@ -90,10 +95,10 @@ fn topic_errors_map_to_distinct_codes() {
         ("a\nb", PM_ERR_TOPIC_CONTROL),
     ];
     for (topic, expected) in cases {
-        assert_eq!(pm_publish(hub, 1, s(topic), s("x"), &mut result), expected, "topic {topic:?}");
+        assert_eq!(pm_publish(hub, 1, s(topic), s("x"), none(), &mut result), expected, "topic {topic:?}");
     }
     let long = "x".repeat(256);
-    assert_eq!(pm_publish(hub, 1, s(&long), s("x"), &mut result), PM_ERR_TOPIC_TOO_LONG);
+    assert_eq!(pm_publish(hub, 1, s(&long), s("x"), none(), &mut result), PM_ERR_TOPIC_TOO_LONG);
 
     pm_hub_free(hub);
 }
@@ -107,7 +112,7 @@ fn subscribe_matches_publish_and_replays_from_a_cursor() {
     let mut first_seq = 0u64;
     for (i, body) in ["one", "two", "three"].iter().enumerate() {
         let mut r: *mut pm_publish_result = std::ptr::null_mut();
-        assert_eq!(pm_publish(hub, 1000 + i as u64, s("t"), s(body), &mut r), PM_OK);
+        assert_eq!(pm_publish(hub, 1000 + i as u64, s("t"), s(body), none(), &mut r), PM_OK);
         if i == 0 {
             pm_publish_id(r, &mut first_ms, &mut first_seq);
         }
@@ -136,7 +141,7 @@ fn subscribe_matches_publish_and_replays_from_a_cursor() {
 
     // A later publish targets the subscriber.
     let mut r: *mut pm_publish_result = std::ptr::null_mut();
-    assert_eq!(pm_publish(hub, 2000, s("t"), s("four"), &mut r), PM_OK);
+    assert_eq!(pm_publish(hub, 2000, s("t"), s("four"), none(), &mut r), PM_OK);
     let mut count = 0usize;
     let targets = pm_publish_targets(r, &mut count);
     assert_eq!(count, 1);
@@ -156,7 +161,7 @@ fn a_truncated_cursor_reports_earliest() {
     for i in 0..30u64 {
         let mut r: *mut pm_publish_result = std::ptr::null_mut();
         let body = "x".repeat(90);
-        assert_eq!(pm_publish(hub, 1000 + i, s("t"), s(&body), &mut r), PM_OK);
+        assert_eq!(pm_publish(hub, 1000 + i, s("t"), s(&body), none(), &mut r), PM_OK);
         if i == 0 {
             pm_publish_id(r, &mut first_ms, &mut first_seq);
         }
@@ -236,7 +241,7 @@ fn cursor_starts_at_zero_and_advances() {
     assert_eq!((ms, seq), (0, 0));
 
     let mut r: *mut pm_publish_result = std::ptr::null_mut();
-    pm_publish(hub, 1234, s("t"), s("v"), &mut r);
+    pm_publish(hub, 1234, s("t"), s("v"), none(), &mut r);
     pm_publish_result_free(r);
 
     assert_eq!(pm_cursor(hub, &mut ms, &mut seq), PM_OK);
@@ -249,12 +254,12 @@ fn null_arguments_are_errors_not_crashes() {
     // A binding with a bug must get a status code back, not take the host process down.
     let mut result: *mut pm_publish_result = std::ptr::null_mut();
     assert_eq!(
-        pm_publish(std::ptr::null_mut(), 1, s("t"), s("x"), &mut result),
+        pm_publish(std::ptr::null_mut(), 1, s("t"), s("x"), none(), &mut result),
         PM_ERR_NULL
     );
 
     let hub = pm_hub_new(std::ptr::null());
-    assert_eq!(pm_publish(hub, 1, s("t"), s("x"), std::ptr::null_mut()), PM_ERR_NULL);
+    assert_eq!(pm_publish(hub, 1, s("t"), s("x"), none(), std::ptr::null_mut()), PM_ERR_NULL);
     assert_eq!(pm_cursor(hub, std::ptr::null_mut(), std::ptr::null_mut()), PM_ERR_NULL);
     assert_eq!(pm_subscribe_id(std::ptr::null()), 0);
     assert_eq!(pm_subscribe_replay_count(std::ptr::null()), 0);
@@ -274,7 +279,7 @@ fn invalid_utf8_is_rejected_rather_than_reinterpreted() {
     let bad = [0xffu8, 0xfe];
     let topic = pm_str { ptr: bad.as_ptr(), len: bad.len() };
     let mut result: *mut pm_publish_result = std::ptr::null_mut();
-    assert_eq!(pm_publish(hub, 1, topic, s("x"), &mut result), PM_ERR_UTF8);
+    assert_eq!(pm_publish(hub, 1, topic, s("x"), none(), &mut result), PM_ERR_UTF8);
     pm_hub_free(hub);
 }
 
@@ -288,5 +293,70 @@ fn zeroed_config_means_defaults() {
     let mut sub: *mut pm_subscribe_result = std::ptr::null_mut();
     assert_eq!(pm_subscribe(hub, topics.as_ptr(), 1, s(""), 0, 0, 0, &mut sub), PM_OK);
     pm_subscribe_result_free(sub);
+    pm_hub_free(hub);
+}
+
+#[test]
+fn origin_is_echoed_on_the_frame() {
+    let hub = pm_hub_new(std::ptr::null());
+    let mut result: *mut pm_publish_result = std::ptr::null_mut();
+
+    assert_eq!(
+        pm_publish(hub, 1, s("t"), s("v"), s("7f3a1c0e"), &mut result),
+        PM_OK
+    );
+    assert_eq!(frame_of(result), "id: 1-0\nevent: t\norigin: 7f3a1c0e\ndata: v\n\n");
+    pm_publish_result_free(result);
+    pm_hub_free(hub);
+}
+
+#[test]
+fn an_empty_origin_means_absent_rather_than_an_error() {
+    // Bindings produce empty strings where a value was missing — `?? ''` in JavaScript,
+    // a header that was not sent — and both cores treat that as "no origin". Rejecting
+    // it would make the ordinary case the one that throws.
+    let hub = pm_hub_new(std::ptr::null());
+    let mut result: *mut pm_publish_result = std::ptr::null_mut();
+
+    assert_eq!(pm_publish(hub, 1, s("t"), s("v"), s(""), &mut result), PM_OK);
+    assert_eq!(frame_of(result), "id: 1-0\nevent: t\ndata: v\n\n");
+    pm_publish_result_free(result);
+    pm_hub_free(hub);
+}
+
+#[test]
+fn an_absent_origin_is_a_null_pointer_and_omits_the_field() {
+    let hub = pm_hub_new(std::ptr::null());
+    let mut result: *mut pm_publish_result = std::ptr::null_mut();
+
+    // Byte-identical to what an implementation predating the field would emit — which
+    // is what makes §6.0 additive rather than a version.
+    assert_eq!(pm_publish(hub, 1, s("t"), s("v"), none(), &mut result), PM_OK);
+    assert_eq!(frame_of(result), "id: 1-0\nevent: t\ndata: v\n\n");
+    pm_publish_result_free(result);
+    pm_hub_free(hub);
+}
+
+#[test]
+fn a_rejected_origin_never_reaches_the_wire() {
+    let hub = pm_hub_new(std::ptr::null());
+    let mut result: *mut pm_publish_result = std::ptr::null_mut();
+
+    // The one that matters: an LF would end the frame and forge the next one.
+    assert_eq!(
+        pm_publish(hub, 1, s("t"), s("v"), s("a\nid: 9-9"), &mut result),
+        PM_ERR_ORIGIN_CONTROL
+    );
+    assert_eq!(
+        pm_publish(hub, 1, s("t"), s("v"), s(&"x".repeat(65)), &mut result),
+        PM_ERR_ORIGIN_TOO_LONG
+    );
+    // `out` is untouched on error, so nothing was allocated and nothing leaks.
+    assert!(result.is_null());
+
+    // And no id was consumed by either rejection.
+    assert_eq!(pm_publish(hub, 1, s("t"), s("v"), none(), &mut result), PM_OK);
+    assert_eq!(frame_of(result), "id: 1-0\nevent: t\ndata: v\n\n");
+    pm_publish_result_free(result);
     pm_hub_free(hub);
 }

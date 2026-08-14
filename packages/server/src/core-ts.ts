@@ -6,7 +6,15 @@
  * second implementation the conformance corpus exists to keep honest.
  */
 
-import { Hub, encodeControl, encodeFrame, formatId, parseId, validTopic } from './hub.js'
+import {
+  Hub,
+  encodeControl,
+  encodeFrame,
+  formatId,
+  parseId,
+  validOrigin,
+  validTopic,
+} from './hub.js'
 import { Registry } from './registry.js'
 import {
   CoreError,
@@ -33,25 +41,28 @@ export function createTsCore(config: CoreConfig = {}): HubCore {
   })
 
   return {
-    publish(nowMs, topic, payload): PublishOutcome {
-      const { id, frame } = hub.publish(nowMs, topic, payload)
+    publish(nowMs, topic, payload, origin): PublishOutcome {
+      const { id, frame } = hub.publish(nowMs, topic, payload, origin)
       return { id: formatId(id), frame, targets: registry.match(topic) }
     },
 
-    append(id, topic, payload): PublishOutcome {
+    append(id, topic, payload, origin): PublishOutcome {
       const parsed = parseId(id)
       if (parsed === null) throw new CoreError('malformed-cursor', `malformed id: ${id}`)
-      const appended = hub.append(parsed, topic, payload)
+      const appended = hub.append(parsed, topic, payload, origin)
       return { id, frame: appended.frame, targets: registry.match(topic) }
     },
 
-    encode(id, topic, payload): Uint8Array {
+    encode(id, topic, payload, origin): Uint8Array {
       const parsed = parseId(id)
       if (parsed === null) throw new CoreError('malformed-cursor', `malformed id: ${id}`)
       if (!validTopic(topic)) {
         throw new CoreError('invalid-topic', `invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
       }
-      return encodeFrame(parsed.ms, parsed.seq, topic, payload)
+      if (origin !== undefined && origin !== '' && !validOrigin(origin)) {
+        throw new CoreError('invalid-origin', `invalid origin: ${JSON.stringify(origin.slice(0, 64))}`)
+      }
+      return encodeFrame(parsed.ms, parsed.seq, topic, payload, origin)
     },
 
     subscribe(topics, key, cursor): SubscribeOutcome {
@@ -121,5 +132,6 @@ export function createTsCore(config: CoreConfig = {}): HubCore {
     },
 
     validTopic,
+    validOrigin,
   }
 }

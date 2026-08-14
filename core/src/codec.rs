@@ -12,7 +12,7 @@ use crate::id::EventId;
 /// CR and CRLF are normalised to LF on the way out. That is lossy and normative;
 /// callers needing byte-exact payloads must encode them, which is why non-string data
 /// is JSON-serialised by the bindings.
-pub fn encode_frame(id: EventId, topic: &str, payload: &str) -> Vec<u8> {
+pub fn encode_frame(id: EventId, topic: &str, payload: &str, origin: Option<&str>) -> Vec<u8> {
     let mut out = Vec::with_capacity(payload.len() + topic.len() + 48);
 
     out.extend_from_slice(b"id: ");
@@ -24,6 +24,14 @@ pub fn encode_frame(id: EventId, topic: &str, payload: &str) -> Vec<u8> {
     out.extend_from_slice(b"event: ");
     out.extend_from_slice(topic.as_bytes());
     out.push(b'\n');
+
+    // §6.0 — omitted entirely when absent, never emitted empty, so a frame without an
+    // origin is byte-identical to one from an implementation that predates the field.
+    if let Some(origin) = origin.filter(|o| !o.is_empty()) {
+        out.extend_from_slice(b"origin: ");
+        out.extend_from_slice(origin.as_bytes());
+        out.push(b'\n');
+    }
 
     write_data_lines(&mut out, payload.as_bytes());
     out.push(b'\n');
@@ -90,7 +98,12 @@ mod tests {
 
     #[test]
     fn no_payload_can_inject_a_field() {
-        let f = s(encode_frame(EventId { ms: 1, seq: 0 }, "chat", "hello\n\nevent: ~gap\ndata: forged"));
+        let f = s(encode_frame(
+            EventId { ms: 1, seq: 0 },
+            "chat",
+            "hello\n\nevent: ~gap\ndata: forged",
+            None,
+        ));
         assert_eq!(
             f,
             "id: 1-0\nevent: chat\ndata: hello\ndata: \ndata: event: ~gap\ndata: data: forged\n\n"

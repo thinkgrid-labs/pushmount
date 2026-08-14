@@ -13,6 +13,9 @@ import { writeFileSync } from 'node:fs'
 const x255 = 'x'.repeat(255)
 const x256 = 'x'.repeat(256)
 const jp86 = '日'.repeat(86)   // 86 UTF-16 units, 258 UTF-8 bytes
+const x64 = 'x'.repeat(64)
+const x65 = 'x'.repeat(65)
+const jp22 = '日'.repeat(22)   // 22 UTF-16 units, 66 UTF-8 bytes
 
 const vectors = {
   version: '0.1',
@@ -83,6 +86,57 @@ const vectors = {
       ms: 1, seq: 0, topic: 'a~b', payload: 'v',
       frame: 'id: 1-0\nevent: a~b\ndata: v\n\n',
     },
+    {
+      id: 'E13', ref: '§6.0', desc: 'origin is emitted between event and data',
+      ms: 1, seq: 0, topic: 't', payload: 'v', origin: '7f3a1c0e',
+      frame: 'id: 1-0\nevent: t\norigin: 7f3a1c0e\ndata: v\n\n',
+    },
+    {
+      id: 'E14', ref: '§6.0', desc: 'an empty origin is omitted, not emitted empty',
+      ms: 1, seq: 0, topic: 't', payload: 'v', origin: '',
+      frame: 'id: 1-0\nevent: t\ndata: v\n\n',
+    },
+    {
+      id: 'E15', ref: '§6.0',
+      desc: 'a frame with no origin is byte-identical to one from before the field existed',
+      ms: 1, seq: 0, topic: 't', payload: 'v',
+      frame: 'id: 1-0\nevent: t\ndata: v\n\n',
+    },
+    {
+      id: 'E16', ref: '§6.0',
+      desc: 'origin and a segmented payload keep their order: id, event, origin, data',
+      ms: 1, seq: 0, topic: 't', payload: 'a\nb', origin: 'tab-1',
+      frame: 'id: 1-0\nevent: t\norigin: tab-1\ndata: a\ndata: b\n\n',
+    },
+  ],
+
+  // ---- §6.0 origin validation ---------------------------------------------
+  //
+  // The same shape as the topic rules, and here for the same reason: an origin is
+  // written into a frame, so a control character in it forges the next one. It differs
+  // in coming from whichever client issued the write, which makes it the more exposed
+  // of the two fields.
+  origin: [
+    { id: 'O1', origin: '7f3a1c0e', valid: true, desc: 'ordinary opaque token' },
+    { id: 'O2', origin: 'a', valid: true, desc: 'one byte is the minimum' },
+    { id: 'O3', origin: x64, valid: true, desc: '64 bytes is the maximum' },
+    { id: 'O4', origin: x65, valid: false, desc: '65 bytes is one too many' },
+    { id: 'O5', origin: '', valid: false, desc: 'empty is absent, and absent is not a value' },
+    {
+      id: 'O6', origin: 'a\nid: 1-0', valid: false,
+      desc: 'LF would end the frame and forge the next one',
+    },
+    { id: 'O7', origin: 'a\rb', valid: false, desc: 'bare CR is a segment boundary too' },
+    { id: 'O8', origin: 'a\u0000b', valid: false, desc: 'NUL is a control character' },
+    { id: 'O9', origin: 'a\u007fb', valid: false, desc: 'DEL is a control character' },
+    {
+      id: 'O10', origin: jp22, valid: false,
+      desc: '22 characters but 66 UTF-8 bytes — bytes, not code units (cf. T15)',
+    },
+    {
+      id: 'O11', origin: '~tilde', valid: true,
+      desc: 'tilde is reserved for topics only; an origin is never a frame name',
+    },
   ],
 
   // ---- §3 topic validation -------------------------------------------------
@@ -137,5 +191,6 @@ const vectors = {
 writeFileSync(new URL('./vectors.json', import.meta.url), JSON.stringify(vectors, null, 2) + '\n')
 console.log(
   `vectors.json written — ${vectors.encode.length} encode, ${vectors.topic.length} topic, ` +
-  `${vectors.idOrder.length} id-order, ${vectors.monotonic.length} monotonic`
+  `${vectors.origin.length} origin, ${vectors.idOrder.length} id-order, ` +
+  `${vectors.monotonic.length} monotonic`
 )

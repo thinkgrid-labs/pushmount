@@ -7,10 +7,12 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 const native = require('./dist/pushmount.node')
 
-export const encodeFrame = (ms, seq, topic, payload) =>
-  new Uint8Array(native.encodeFrame(ms, seq, topic, payload))
+export const encodeFrame = (ms, seq, topic, payload, origin) =>
+  new Uint8Array(native.encodeFrame(ms, seq, topic, payload, origin ?? null))
 
 export const validTopic = (topic) => native.validateTopic(topic)
+
+export const validOrigin = (origin) => native.validateOrigin(origin)
 
 export const compareIds = ([msA, seqA], [msB, seqB]) =>
   native.compareIds(`${msA}-${seqA}`, `${msB}-${seqB}`)

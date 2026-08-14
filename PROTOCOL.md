@@ -219,6 +219,30 @@ Registering before snapshotting (2 before 3) can deliver one event twice. That i
 intended trade: clients dedupe by id (§9.2), so a duplicate is a rendering no-op, whereas
 the reverse order drops anything published between the two steps and nothing fails.
 
+### 4.6 Authorization lifetime
+
+Authorization is established once, by §4.3, and a stream then outlives the request that
+established it. This is a real difference from the polling such a stream replaces, where
+every request re-authorized, and implementations MUST NOT present a connection's
+authorization as continuously verified.
+
+A server MAY re-check authorization on a live connection at any time. When a re-check
+fails, the server MUST close the connection; it MUST NOT continue delivering events for a
+topic that is no longer authorized, and it MUST NOT narrow a connection's topic set in
+place — there is no frame for "you have lost this topic but keep the rest", and inventing
+one would put a second, weaker copy of §4.3's decision on the wire.
+
+Closing is sufficient because it is not the last word. The client reconnects with its
+cursor (§9.4) and §4.3 runs again on that request, which answers `403` if nothing is
+authorized any more and `200` with a `~denied` frame if only part of it is. The client
+therefore learns exactly what it lost, from the authority that decided it, over a path
+that already exists.
+
+Clients MUST NOT treat a closed stream as evidence of revocation — it is far more often a
+proxy timeout or a deploy — and MUST reconnect per §9.4. A client whose reconnection is
+refused with `403` SHOULD stop and surface that to the application rather than backing off
+indefinitely, because retrying cannot change the answer.
+
 ---
 
 ## 5. Endpoint 2 — the cursor
@@ -259,13 +283,49 @@ Frames are UTF-8 SSE. A data frame is:
 ```
 id: <event-id>\n
 event: <topic>\n
+[origin: <origin-id>\n]
 data: <segment>\n
 [data: <segment>\n ...]
 \n
 ```
 
-Field order MUST be `id`, `event`, then `data` lines. Frames MUST be terminated by a blank
-line. Line terminators MUST be LF (`U+000A`), never CRLF.
+Field order MUST be `id`, `event`, `origin` if present, then `data` lines. Frames MUST be
+terminated by a blank line. Line terminators MUST be LF (`U+000A`), never CRLF.
+
+The `origin` field is OPTIONAL and MUST be omitted entirely — not emitted empty — when the
+publisher supplied none. A frame without an origin is byte-identical to one produced by an
+implementation that has never heard of the field, which is what makes this an additive
+change rather than a version.
+
+### 6.0 Origin
+
+```
+origin: 7f3a1c0e
+```
+
+Identifies the client that caused the event, so that client can skip it.
+
+A client that issues a write learns the result twice: once in the write's own HTTP
+response, and once over the stream. §9.2's dedupe cannot help — it compares event ids, and
+the HTTP response has none — so the tab that acted is the one tab that renders the change
+twice, which is both the most visible case and the one most likely to be mistaken for a
+bug in the application.
+
+An origin id is opaque to the protocol: the server receives it from the client that issued
+the write, by whatever means that write already travelled, and echoes it on the resulting
+event. Servers MUST NOT derive it, and MUST NOT treat it as identifying a *user* — it is
+neither authenticated nor unique, and a client may send any value at all. It carries no
+authority and MUST NOT be used for authorization.
+
+An origin MUST be 1 to 64 bytes of UTF-8, and MUST NOT contain a control character
+(`U+0000`–`U+001F` or `U+007F`). A server MUST reject a publish whose origin violates this
+rather than sanitising it. The reason is §6.1's: a value containing LF ends the frame, and
+what follows parses as a new field — so an unvalidated origin is a forgery primitive
+reachable by any client that can issue a write.
+
+Clients receiving a frame whose `origin` equals their own origin id MUST advance their
+cursor and MUST NOT deliver the event to handlers. Skipping the cursor update instead
+would make every skipped event replay on the next reconnect.
 
 ### 6.1 Payload segmentation
 
@@ -531,9 +591,9 @@ Tracked here rather than in issues until v0.1 ships.
 2. **Service worker pass-through.** A host application whose SW does
    `respondWith(fetch(event.request))` can buffer the stream and defeat every header in
    §4.4. Needs a documented detection or at minimum a README warning.
-3. **Duplicate delivery to the originating tab.** The client that issued a write receives
-   the result over HTTP *and* over the stream; §9.2 dedupe cannot help across two
-   transports. Candidate fix is an `originId` echoed in the frame. v0.2, not a blocker.
+3. ~~**Duplicate delivery to the originating tab.**~~ **Resolved** by the `origin` field
+   (§6.0): the publisher echoes the id the writing client supplied, and that client skips
+   the event while still advancing its cursor.
 4. **Multi-process publish.** Until a backplane exists (v0.3), a publish in one process
    reaches only that process's subscribers. The server MUST warn at startup when clustering
    is detectable and the in-memory backplane is in use.

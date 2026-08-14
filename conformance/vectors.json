@@ -122,6 +122,117 @@
       "topic": "a~b",
       "payload": "v",
       "frame": "id: 1-0\nevent: a~b\ndata: v\n\n"
+    },
+    {
+      "id": "E13",
+      "ref": "§6.0",
+      "desc": "origin is emitted between event and data",
+      "ms": 1,
+      "seq": 0,
+      "topic": "t",
+      "payload": "v",
+      "origin": "7f3a1c0e",
+      "frame": "id: 1-0\nevent: t\norigin: 7f3a1c0e\ndata: v\n\n"
+    },
+    {
+      "id": "E14",
+      "ref": "§6.0",
+      "desc": "an empty origin is omitted, not emitted empty",
+      "ms": 1,
+      "seq": 0,
+      "topic": "t",
+      "payload": "v",
+      "origin": "",
+      "frame": "id: 1-0\nevent: t\ndata: v\n\n"
+    },
+    {
+      "id": "E15",
+      "ref": "§6.0",
+      "desc": "a frame with no origin is byte-identical to one from before the field existed",
+      "ms": 1,
+      "seq": 0,
+      "topic": "t",
+      "payload": "v",
+      "frame": "id: 1-0\nevent: t\ndata: v\n\n"
+    },
+    {
+      "id": "E16",
+      "ref": "§6.0",
+      "desc": "origin and a segmented payload keep their order: id, event, origin, data",
+      "ms": 1,
+      "seq": 0,
+      "topic": "t",
+      "payload": "a\nb",
+      "origin": "tab-1",
+      "frame": "id: 1-0\nevent: t\norigin: tab-1\ndata: a\ndata: b\n\n"
+    }
+  ],
+  "origin": [
+    {
+      "id": "O1",
+      "origin": "7f3a1c0e",
+      "valid": true,
+      "desc": "ordinary opaque token"
+    },
+    {
+      "id": "O2",
+      "origin": "a",
+      "valid": true,
+      "desc": "one byte is the minimum"
+    },
+    {
+      "id": "O3",
+      "origin": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "valid": true,
+      "desc": "64 bytes is the maximum"
+    },
+    {
+      "id": "O4",
+      "origin": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "valid": false,
+      "desc": "65 bytes is one too many"
+    },
+    {
+      "id": "O5",
+      "origin": "",
+      "valid": false,
+      "desc": "empty is absent, and absent is not a value"
+    },
+    {
+      "id": "O6",
+      "origin": "a\nid: 1-0",
+      "valid": false,
+      "desc": "LF would end the frame and forge the next one"
+    },
+    {
+      "id": "O7",
+      "origin": "a\rb",
+      "valid": false,
+      "desc": "bare CR is a segment boundary too"
+    },
+    {
+      "id": "O8",
+      "origin": "a\u0000b",
+      "valid": false,
+      "desc": "NUL is a control character"
+    },
+    {
+      "id": "O9",
+      "origin": "ab",
+      "valid": false,
+      "desc": "DEL is a control character"
+    },
+    {
+      "id": "O10",
+      "origin": "日日日日日日日日日日日日日日日日日日日日日日",
+      "valid": false,
+      "desc": "22 characters but 66 UTF-8 bytes — bytes, not code units (cf. T15)"
+    },
+    {
+      "id": "O11",
+      "origin": "~tilde",
+      "valid": true,
+      "desc": "tilde is reserved for topics only; an origin is never a frame name"
     }
   ],
   "topic": [

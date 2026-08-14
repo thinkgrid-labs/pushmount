@@ -49,6 +49,9 @@ extern "C" {
 #define PM_ERR_UTF8                     -9
 #define PM_ERR_PANIC                   -10
 #define PM_ERR_POISONED                -11
+#define PM_ERR_ORIGIN_EMPTY            -12   /* validator only; pm_publish never returns it */
+#define PM_ERR_ORIGIN_TOO_LONG         -13   /* 64 BYTES, not characters */
+#define PM_ERR_ORIGIN_CONTROL          -14
 
 /* pm_note_buffer verdicts */
 #define PM_BUFFER_OK                     0
@@ -98,9 +101,13 @@ void pm_hub_free(pm_hub *hub);
 /* ---- publish ------------------------------------------------------------ */
 
 /* Assigns an id, encodes a frame, and matches subscribers.
- * On PM_OK, *out receives a result to release with pm_publish_result_free. */
+ * On PM_OK, *out receives a result to release with pm_publish_result_free.
+ *
+ * origin is the optional §6.0 field. Pass {NULL, 0} for absent; a zero length means the
+ * same thing, because bindings routinely produce an empty string where a value was
+ * missing and rejecting that would make the common case the hostile one. */
 int32_t pm_publish(pm_hub *hub, uint64_t now_ms, pm_str topic, pm_str payload,
-                   pm_publish_result **out);
+                   pm_str origin, pm_publish_result **out);
 
 const uint8_t *pm_publish_frame(const pm_publish_result *result, size_t *len);
 const uint64_t *pm_publish_targets(const pm_publish_result *result, size_t *count);

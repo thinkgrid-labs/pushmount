@@ -468,3 +468,216 @@ test('a throwing listener does not stop the others or the connection', async () 
     await s.close()
   }
 })
+
+// ------------------------------------------------------------------ reconnect()
+
+test('a 403 stops the client, and reconnect() is what revives it', async () => {
+  let permitted = false
+  const s = await boot({ authorize: () => permitted })
+  const client = createClient({ url: s.url, debounceMs: 20, onError: () => {} })
+  try {
+    const got = []
+    client.subscribe('a', (data) => got.push(data))
+
+    // Denied: not transient, so the client stops rather than backing off against a
+    // decision that will not change on its own.
+    await until(() => client.rejected, 2000, 'rejection')
+    assert.equal(client.state, 'closed')
+    const attempts = client.connectionCount
+
+    await tick(200)
+    assert.equal(client.connectionCount, attempts, 'a stopped client must not retry')
+
+    // The application logs back in and says so.
+    permitted = true
+    client.reconnect()
+
+    await until(() => client.state === 'open', 3000, 'reopen')
+    assert.equal(client.rejected, false)
+    await s.hub.publish('a', 'after re-auth')
+    await until(() => got.length === 1, 2000, 'delivery')
+  } finally {
+    client.close()
+    await s.close()
+  }
+})
+
+test('reconnect() resumes from the cursor rather than restarting', async () => {
+  const s = await boot()
+  const client = createClient({ url: s.url, debounceMs: 20 })
+  try {
+    const got = []
+    client.subscribe('a', (data) => got.push(data))
+    await until(() => client.state === 'open', 2000, 'open')
+
+    await s.hub.publish('a', 'one')
+    await until(() => got.length === 1, 2000, 'first')
+    const cursor = client.cursor
+
+    client.reconnect()
+    await until(() => client.state === 'open', 3000, 'reopen')
+
+    // Same cursor, so history is replayed from where it left off — and §9.2 dedupe
+    // means the event already delivered is not delivered twice.
+    assert.equal(client.cursor, cursor)
+    await tick(150)
+    assert.equal(got.length, 1, `redelivered: ${JSON.stringify(got)}`)
+
+    await s.hub.publish('a', 'two')
+    await until(() => got.length === 2, 2000, 'second')
+  } finally {
+    client.close()
+    await s.close()
+  }
+})
+
+test('reconnect() on a closed client stays closed', async () => {
+  const s = await boot()
+  const client = createClient({ url: s.url, debounceMs: 20 })
+  try {
+    client.subscribe('a', () => {})
+    await until(() => client.state === 'open', 2000, 'open')
+
+    client.close()
+    client.reconnect()
+    await tick(150)
+
+    // close() is an end of life, not a failure to recover from.
+    assert.equal(client.state, 'closed')
+    await until(() => s.hub.connectionCount() === 0, 2000, 'server saw the close')
+  } finally {
+    client.close()
+    await s.close()
+  }
+})
+
+test('a revoked connection reconnects, is refused, and recovers on reconnect()', async () => {
+  // The whole story end to end: authorization is inherited once at connect, the server
+  // notices it has expired, and the client finds out the only way it can — by being
+  // turned away when it tries to resume.
+  let permitted = true
+  const hub = createHub({ keepAliveMs: 0 })
+  const handler = hub.handler({ authorize: () => permitted, revalidateMs: 40 })
+  const server = createServer((req, res) => {
+    if (req.url.split('?')[0] === '/events') return void handler(req, res)
+    res.writeHead(404).end()
+  })
+  await new Promise((r) => server.listen(0, r))
+  const url = `http://127.0.0.1:${server.address().port}/events`
+
+  const client = createClient({ url, debounceMs: 20, baseBackoffMs: 30, onError: () => {} })
+  try {
+    const got = []
+    client.subscribe('a', (data) => got.push(data))
+    await until(() => client.state === 'open', 2000, 'open')
+
+    permitted = false
+    // Revalidation closes the stream; the client reconnects on its own and *that*
+    // request is the one that gets the 403.
+    await until(() => client.rejected, 3000, 'rejection after revocation')
+    assert.equal(hub.connectionCount(), 0)
+
+    permitted = true
+    client.reconnect()
+    await until(() => client.state === 'open', 3000, 'reopen')
+
+    await hub.publish('a', 'welcome back')
+    await until(() => got.length === 1, 2000, 'delivery')
+  } finally {
+    client.close()
+    hub.close()
+    await new Promise((r) => server.close(r))
+  }
+})
+
+// ------------------------------------------------------------------- §6.0 origin
+
+test('a client skips the events it caused, and other clients still get them', async () => {
+  const s = await boot()
+  const actor = createClient({ url: s.url, debounceMs: 20, originId: 'tab-a' })
+  const observer = createClient({ url: s.url, debounceMs: 20, originId: 'tab-b' })
+  try {
+    const mine = []
+    const theirs = []
+    actor.subscribe('orders', (d) => mine.push(d))
+    observer.subscribe('orders', (d) => theirs.push(d))
+    await until(() => actor.state === 'open' && observer.state === 'open', 2000, 'both open')
+
+    // The write came from tab A, so the server echoes A's origin on the event.
+    await s.hub.publish('orders', 'created-by-a', { origin: 'tab-a' })
+
+    await until(() => theirs.length === 1, 2000, 'observer delivery')
+    await tick(150)
+    assert.deepEqual(theirs, ['created-by-a'])
+    // A already applied this from its own POST response; a second copy is the
+    // double-render that reads as an application bug.
+    assert.deepEqual(mine, [], 'the originating client must not receive its own echo')
+  } finally {
+    actor.close()
+    observer.close()
+    await s.close()
+  }
+})
+
+test('a skipped event still advances the cursor', async () => {
+  const s = await boot()
+  const client = createClient({ url: s.url, debounceMs: 20, originId: 'tab-a' })
+  try {
+    const got = []
+    client.subscribe('orders', (d) => got.push(d))
+    await until(() => client.state === 'open', 2000, 'open')
+
+    const ack = await s.hub.publish('orders', 'mine', { origin: 'tab-a' })
+    await until(() => client.cursor === ack.id, 2000, 'cursor advanced')
+    assert.deepEqual(got, [])
+
+    // Without the cursor advancing, this reconnect would replay the skipped event —
+    // and every one before it — for as long as the tab kept writing.
+    client.reconnect()
+    await until(() => client.state === 'open', 3000, 'reopen')
+    await tick(150)
+    assert.deepEqual(got, [], 'a skipped event must not come back on reconnect')
+
+    await s.hub.publish('orders', 'someone else')
+    await until(() => got.length === 1, 2000, 'delivery')
+    assert.deepEqual(got, ['someone else'])
+  } finally {
+    client.close()
+    await s.close()
+  }
+})
+
+test('an origin id is generated when none is supplied', async () => {
+  const s = await boot()
+  const a = createClient({ url: s.url, debounceMs: 20 })
+  const b = createClient({ url: s.url, debounceMs: 20 })
+  try {
+    // The feature has to cost nothing to adopt: read it and attach it to writes.
+    assert.ok(a.originId.length > 0)
+    assert.notEqual(a.originId, b.originId)
+  } finally {
+    a.close()
+    b.close()
+    await s.close()
+  }
+})
+
+test('an origin that would forge a frame is refused, not sanitised', async () => {
+  const s = await boot()
+  try {
+    // §6.0 — the whole reason the field is validated: an LF ends the frame, and what
+    // follows parses as the next one.
+    await assert.rejects(
+      () => s.hub.publish('orders', 'v', { origin: 'a\nid: 9-9\nevent: ~gap\ndata: {}' }),
+      /invalid origin/,
+    )
+    await assert.rejects(() => s.hub.publish('orders', 'v', { origin: 'x'.repeat(65) }), /invalid origin/)
+
+    // An empty origin is absent, not an error — `?? ''` is how JavaScript spells a
+    // missing header.
+    const ack = await s.hub.publish('orders', 'v', { origin: '' })
+    assert.match(ack.id, /^\d+-\d+$/)
+  } finally {
+    await s.close()
+  }
+})

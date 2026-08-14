@@ -29,11 +29,12 @@ import {
 export interface NativeModule {
   Hub: new (config: Record<string, number | undefined>) => NativeHub
   validateTopic(topic: string): boolean
+  validateOrigin(origin: string): boolean
   compareIds(a: string, b: string): number
 }
 
 interface NativeHub {
-  publish(nowMs: number, topic: string, payload: string): {
+  publish(nowMs: number, topic: string, payload: string, origin?: string | null): {
     id: string
     frame: Uint8Array
     targets: number[]
@@ -64,6 +65,9 @@ function toCoreError(error: unknown): CoreError {
   if (message.includes('malformed cursor')) {
     return new CoreError('malformed-cursor', message)
   }
+  if (message.includes('origin')) {
+    return new CoreError('invalid-origin', message)
+  }
   if (message.includes('too-many-topics')) {
     return new CoreError('too-many-topics', message)
   }
@@ -86,9 +90,9 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
   })
 
   return {
-    publish(nowMs, topic, payload) {
+    publish(nowMs, topic, payload, origin) {
       try {
-        return hub.publish(nowMs, topic, payload)
+        return hub.publish(nowMs, topic, payload, origin ?? null)
       } catch (error) {
         throw toCoreError(error)
       }
@@ -138,5 +142,6 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
     truncatedFrame: (subscriber) => hub.truncatedFrame(subscriber),
     deniedFrame: (topics) => hub.deniedFrame([...topics]),
     validTopic: (topic) => native.validateTopic(topic),
+    validOrigin: (origin) => native.validateOrigin(origin),
   }
 }

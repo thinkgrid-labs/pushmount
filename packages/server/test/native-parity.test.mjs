@@ -273,3 +273,34 @@ test('the cursor endpoint reads through the core', options, async () => {
     await s.close()
   }
 })
+
+test('the rust core emits §6.0 origin frames identically', options, async () => {
+  const s = await boot()
+  try {
+    const res = await fetch(`${s.base}/events?topics=t`)
+    const reading = readFrames(res, 2)
+    await new Promise((r) => setTimeout(r, 50))
+
+    const ack = await s.hub.publish('t', 'v', { origin: 'tab-a' })
+    const frames = await reading
+    const data = frames.find((f) => f.startsWith('id: '))
+    // Byte-for-byte the same frame the TypeScript core produces — conformance vector
+    // E13, arrived at through the whole HTTP path rather than the encoder alone.
+    assert.equal(data, `id: ${ack.id}\nevent: t\norigin: tab-a\ndata: v\n\n`)
+  } finally {
+    await s.close()
+  }
+})
+
+test('the rust core refuses an origin that would forge a frame', options, async () => {
+  const s = await boot()
+  try {
+    await assert.rejects(() => s.hub.publish('t', 'v', { origin: 'a\nid: 9-9' }), /origin/)
+    await assert.rejects(() => s.hub.publish('t', 'v', { origin: 'x'.repeat(65) }), /origin/)
+    // And empty means absent here too, matching the TypeScript core and the ABI.
+    const ack = await s.hub.publish('t', 'v', { origin: '' })
+    assert.match(ack.id, /^\d+-\d+$/)
+  } finally {
+    await s.close()
+  }
+})

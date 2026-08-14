@@ -76,6 +76,8 @@ export interface RedisBackplaneOptions {
 
 const FIELD_TOPIC = 't'
 const FIELD_PAYLOAD = 'p'
+/** §6.0. Absent rather than empty when there is no origin, so old entries still read. */
+const FIELD_ORIGIN = 'o'
 
 export async function createRedisBackplane(
   options: RedisBackplaneOptions,
@@ -120,7 +122,7 @@ export async function createRedisBackplane(
   void loop()
 
   return {
-    async publish(topic, payload) {
+    async publish(topic, payload, origin) {
       const id = await redis.xadd(
         key,
         'MAXLEN',
@@ -131,6 +133,7 @@ export async function createRedisBackplane(
         topic,
         FIELD_PAYLOAD,
         payload,
+        ...(origin === undefined || origin === '' ? [] : [FIELD_ORIGIN, origin]),
       )
       if (id === null) throw new Error('XADD returned no id')
       return id
@@ -185,14 +188,16 @@ async function newestId(redis: RedisLike, key: string): Promise<string> {
 function toEvent(id: string, fields: string[]): BackplaneEvent | null {
   let topic: string | undefined
   let payload: string | undefined
+  let origin: string | undefined
   for (let i = 0; i + 1 < fields.length; i += 2) {
     if (fields[i] === FIELD_TOPIC) topic = fields[i + 1]
     else if (fields[i] === FIELD_PAYLOAD) payload = fields[i + 1]
+    else if (fields[i] === FIELD_ORIGIN) origin = fields[i + 1]
   }
   // An entry written by something else sharing the key is skipped rather than
-  // delivered as a malformed event.
+  // delivered as a malformed event. An absent origin is normal, not malformed.
   if (topic === undefined || payload === undefined) return null
-  return { id, topic, payload }
+  return origin === undefined ? { id, topic, payload } : { id, topic, payload, origin }
 }
 
 /**

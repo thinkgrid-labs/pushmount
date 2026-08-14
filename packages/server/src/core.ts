@@ -24,13 +24,18 @@ export interface SubscribeOutcome {
   readonly replay: readonly Uint8Array[]
 }
 
-/** Reasons a subscription is refused, mapped to status codes by the handler. */
+/**
+ * Reasons the core refuses a call. The subscribe ones are mapped to status codes by the
+ * handler; `invalid-origin` can only come from a publish, which is a caller error rather
+ * than a request that needs a status.
+ */
 export type SubscribeRejection =
   | 'invalid-topic'
   | 'too-many-topics'
   | 'max-connections'
   | 'max-connections-per-key'
   | 'malformed-cursor'
+  | 'invalid-origin'
 
 export class CoreError extends Error {
   constructor(readonly reason: SubscribeRejection, message: string) {
@@ -40,7 +45,7 @@ export class CoreError extends Error {
 }
 
 export interface HubCore {
-  publish(nowMs: number, topic: string, payload: string): PublishOutcome
+  publish(nowMs: number, topic: string, payload: string, origin?: string): PublishOutcome
   /**
    * Records an event whose id a backplane assigned, and returns who should get it.
    *
@@ -48,7 +53,7 @@ export interface HubCore {
    * minting their own would collide, and clients would discard real events as
    * already-seen.
    */
-  append(id: string, topic: string, payload: string): PublishOutcome
+  append(id: string, topic: string, payload: string, origin?: string): PublishOutcome
   /**
    * Encodes a frame for an event whose id was assigned elsewhere, recording nothing.
    *
@@ -60,7 +65,7 @@ export interface HubCore {
    * breaks the ring's "the oldest entry is at the head" assumption that decides whether
    * a gap gets reported.
    */
-  encode(id: string, topic: string, payload: string): Uint8Array
+  encode(id: string, topic: string, payload: string, origin?: string): Uint8Array
   subscribe(
     topics: readonly string[],
     key: string | undefined,
@@ -74,6 +79,8 @@ export interface HubCore {
   truncatedFrame(subscriber: number): Uint8Array
   deniedFrame(topics: readonly string[]): Uint8Array
   validTopic(topic: string): boolean
+  /** §6.0 — an origin reaches the wire, so it is validated like a topic. */
+  validOrigin(origin: string): boolean
 }
 
 export interface CoreConfig {

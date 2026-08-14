@@ -36,8 +36,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use pushmount_core::{
-    BufferVerdict, Checkpoint, EventId, Hub, HubConfig, PublishEffect, SubscribeEffect,
-    SubscribeError, SubscriberId, TopicError,
+    BufferVerdict, Checkpoint, EventId, Hub, HubConfig, OriginError, PublishEffect, PublishError,
+    SubscribeEffect, SubscribeError, SubscriberId, TopicError,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Mutex;
@@ -68,6 +68,13 @@ pub const PM_ERR_UTF8: i32 = -9;
 pub const PM_ERR_PANIC: i32 = -10;
 /// The hub's lock was poisoned by an earlier panic; the hub is no longer usable.
 pub const PM_ERR_POISONED: i32 = -11;
+/// An origin was validated on its own and was zero bytes. `pm_publish` never returns
+/// this: there, empty and absent are the same thing.
+pub const PM_ERR_ORIGIN_EMPTY: i32 = -12;
+/// An origin exceeded 64 bytes. Bytes, not characters.
+pub const PM_ERR_ORIGIN_TOO_LONG: i32 = -13;
+/// An origin contained a C0 control character or DEL.
+pub const PM_ERR_ORIGIN_CONTROL: i32 = -14;
 
 /// Subscriber is keeping up.
 pub const PM_BUFFER_OK: i32 = 0;
@@ -91,7 +98,7 @@ pub const PM_GAP_SLOW_CONSUMER: i32 = 1;
 /// The ABI revision. Bindings should refuse to load a library whose major differs.
 ///
 /// Encoded as `major * 1000 + minor`.
-pub const PM_ABI_VERSION: u32 = 1_000;
+pub const PM_ABI_VERSION: u32 = 2_000;
 
 // ---------------------------------------------------------------------- types
 
@@ -203,6 +210,21 @@ fn topic_code(e: TopicError) -> i32 {
     }
 }
 
+fn origin_code(e: OriginError) -> i32 {
+    match e {
+        OriginError::Empty => PM_ERR_ORIGIN_EMPTY,
+        OriginError::TooLong => PM_ERR_ORIGIN_TOO_LONG,
+        OriginError::ControlCharacter => PM_ERR_ORIGIN_CONTROL,
+    }
+}
+
+fn publish_code(e: PublishError) -> i32 {
+    match e {
+        PublishError::Topic(t) => topic_code(t),
+        PublishError::Origin(o) => origin_code(o),
+    }
+}
+
 fn subscribe_code(e: SubscribeError) -> i32 {
     match e {
         SubscribeError::Topic(t) => topic_code(t),
@@ -273,12 +295,22 @@ pub extern "C" fn pm_hub_free(hub: *mut pm_hub) {
 ///
 /// On [`PM_OK`], `*out` receives a result the caller must release with
 /// [`pm_publish_result_free`]. On error, `*out` is left untouched.
+///
+/// `origin` is §6.0's optional field. Absent is either a null `origin.ptr` or a zero
+/// length — the two mean the same thing, because the callers on the other side of a
+/// binding produce empty strings for missing values as a matter of course (`?? ""` in
+/// JavaScript, `""` from a missing header) and turning that into an error would make the
+/// common case the hostile one.
+///
+/// [`PM_ERR_ORIGIN_EMPTY`] therefore cannot come from here. It exists for a binding that
+/// calls the validator directly on a value it means to treat as present.
 #[no_mangle]
 pub extern "C" fn pm_publish(
     hub: *mut pm_hub,
     now_ms: u64,
     topic: pm_str,
     payload: pm_str,
+    origin: pm_str,
     out: *mut *mut pm_publish_result,
 ) -> i32 {
     if out.is_null() {
@@ -293,8 +325,16 @@ pub extern "C" fn pm_publish(
             Ok(p) => p,
             Err(code) => return code,
         };
-        match h.publish(now_ms, topic, payload) {
-            Err(e) => topic_code(e),
+        let origin = if origin.ptr.is_null() {
+            None
+        } else {
+            match unsafe { origin.as_str() } {
+                Ok(o) => Some(o),
+                Err(code) => return code,
+            }
+        };
+        match h.publish(now_ms, topic, payload, origin) {
+            Err(e) => publish_code(e),
             Ok(effect) => {
                 let targets = effect.targets.iter().map(|s| s.0).collect();
                 let boxed = Box::new(pm_publish_result { effect, targets });

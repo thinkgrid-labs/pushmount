@@ -12,6 +12,8 @@ export interface ParsedEvent {
   /** Absent on control frames (§7), which must never advance a cursor. */
   readonly id: string | undefined
   readonly event: string | undefined
+  /** §6.0 — the client that caused the event, when the publisher named one. */
+  readonly origin: string | undefined
   readonly data: string
 }
 
@@ -21,6 +23,7 @@ export class SseParser {
 
   #id: string | undefined
   #event: string | undefined
+  #origin: string | undefined
   #data: string[] = []
   #sawField = false
 
@@ -83,6 +86,10 @@ export class SseParser {
         this.#event = value
         this.#sawField = true
         break
+      case 'origin':
+        this.#origin = value
+        this.#sawField = true
+        break
       case 'data':
         this.#data.push(value)
         this.#sawField = true
@@ -100,12 +107,14 @@ export class SseParser {
     const event: ParsedEvent = {
       id: this.#id,
       event: this.#event,
+      origin: this.#origin,
       // §6.1 — segments rejoin with LF, which is why CR and CRLF are lossy on the way out.
       data: this.#data.join('\n'),
     }
 
     this.#id = undefined
     this.#event = undefined
+    this.#origin = undefined
     this.#data = []
     this.#sawField = false
     return event

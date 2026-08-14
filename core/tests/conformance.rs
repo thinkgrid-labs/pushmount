@@ -5,7 +5,7 @@
 //! reason more than one implementation of this protocol is a defensible position, so it
 //! must never fork.
 
-use pushmount_core::{encode_frame, validate_topic, EventId, Hub, HubConfig};
+use pushmount_core::{encode_frame, validate_origin, validate_topic, EventId, Hub, HubConfig};
 use serde_json::Value;
 
 fn corpus() -> Value {
@@ -28,6 +28,7 @@ fn encode_vectors() {
             id,
             v["topic"].as_str().unwrap(),
             v["payload"].as_str().unwrap(),
+            v["origin"].as_str(),
         ))
         .unwrap();
         let want = v["frame"].as_str().unwrap();
@@ -48,6 +49,24 @@ fn topic_vectors() {
     let mut failures = Vec::new();
     for v in c["topic"].as_array().unwrap() {
         let got = validate_topic(v["topic"].as_str().unwrap()).is_ok();
+        let want = v["valid"].as_bool().unwrap();
+        if got != want {
+            failures.push(format!(
+                "  {}  {}\n      expected valid={want}, got {got}",
+                v["id"].as_str().unwrap(),
+                v["desc"].as_str().unwrap()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+#[test]
+fn origin_vectors() {
+    let c = corpus();
+    let mut failures = Vec::new();
+    for v in c["origin"].as_array().unwrap() {
+        let got = validate_origin(v["origin"].as_str().unwrap()).is_ok();
         let want = v["valid"].as_bool().unwrap();
         if got != want {
             failures.push(format!(
@@ -92,7 +111,7 @@ fn monotonic_vectors() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|ms| hub.publish(ms.as_u64().unwrap(), "t", "x").unwrap().id.to_string())
+            .map(|ms| hub.publish(ms.as_u64().unwrap(), "t", "x", None).unwrap().id.to_string())
             .collect();
         let want: Vec<String> = v["expected"]
             .as_array()

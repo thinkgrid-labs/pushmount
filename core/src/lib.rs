@@ -26,14 +26,17 @@ mod codec;
 mod history;
 mod hub;
 mod id;
+mod origin;
 mod registry;
 mod topic;
 
 pub use codec::{encode_control, encode_frame};
 pub use hub::{
-    BufferVerdict, Hub, HubConfig, PublishEffect, SubscribeEffect, SubscribeError, Checkpoint,
+    BufferVerdict, Checkpoint, Hub, HubConfig, PublishEffect, PublishError, SubscribeEffect,
+    SubscribeError,
 };
 pub use id::EventId;
+pub use origin::{validate_origin, OriginError, MAX_ORIGIN_BYTES};
 pub use registry::SubscriberId;
 pub use topic::{validate_topic, TopicError, MAX_TOPIC_BYTES};
 

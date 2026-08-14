@@ -14,8 +14,8 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use pushmount_core::{
-    BufferVerdict, Checkpoint, EventId, Hub as CoreHub, HubConfig, SubscribeError, SubscriberId,
-    TopicError,
+    BufferVerdict, Checkpoint, EventId, Hub as CoreHub, HubConfig, OriginError, PublishError,
+    SubscribeError, SubscriberId, TopicError,
 };
 
 /// Options mirroring `HubConfig`. Absent fields take the core's defaults.
@@ -66,6 +66,21 @@ fn topic_message(e: TopicError) -> String {
     .to_string()
 }
 
+/// Maps a publish rejection onto the message `core-native.ts` matches on.
+///
+/// The messages are part of the binding's contract rather than incidental strings; the
+/// parity tests assert them.
+fn publish_message(e: PublishError) -> String {
+    match e {
+        PublishError::Topic(t) => topic_message(t),
+        PublishError::Origin(o) => match o {
+            OriginError::Empty => "origin is empty".to_string(),
+            OriginError::TooLong => "origin exceeds 64 bytes".to_string(),
+            OriginError::ControlCharacter => "origin contains a control character".to_string(),
+        },
+    }
+}
+
 /// The in-process hub.
 #[napi]
 pub struct Hub {
@@ -101,9 +116,18 @@ impl Hub {
     /// costing a boxed allocation per publish. f64 is exact for every integer below
     /// 2^53, and Unix milliseconds do not reach that until the year 287396.
     #[napi]
-    pub fn publish(&mut self, now_ms: f64, topic: String, payload: String) -> Result<JsPublish> {
-        match self.inner.publish(now_ms as u64, &topic, &payload) {
-            Err(e) => Err(Error::new(Status::InvalidArg, topic_message(e))),
+    pub fn publish(
+        &mut self,
+        now_ms: f64,
+        topic: String,
+        payload: String,
+        origin: Option<String>,
+    ) -> Result<JsPublish> {
+        // Empty means absent, matching the ABI and the TypeScript core: JavaScript
+        // callers produce `''` wherever a value was missing.
+        let origin = origin.filter(|o| !o.is_empty());
+        match self.inner.publish(now_ms as u64, &topic, &payload, origin.as_deref()) {
+            Err(e) => Err(Error::new(Status::InvalidArg, publish_message(e))),
             Ok(effect) => Ok(JsPublish {
                 id: effect.id.to_string(),
                 frame: effect.frame.into(),
@@ -219,6 +243,12 @@ pub fn validate_topic(topic: String) -> bool {
     pushmount_core::validate_topic(&topic).is_ok()
 }
 
+/// §6.0 — exposed so the HTTP layer can reject an origin before it reaches a frame.
+#[napi]
+pub fn validate_origin(origin: String) -> bool {
+    pushmount_core::validate_origin(&origin).is_ok()
+}
+
 /// §2.1 — compares two ids, returning -1, 0 or 1.
 #[napi]
 pub fn compare_ids(a: String, b: String) -> i32 {
@@ -234,11 +264,18 @@ pub fn compare_ids(a: String, b: String) -> i32 {
 
 /// Encodes a frame directly, for the conformance runner.
 #[napi]
-pub fn encode_frame(ms: f64, seq: f64, topic: String, payload: String) -> Buffer {
+pub fn encode_frame(
+    ms: f64,
+    seq: f64,
+    topic: String,
+    payload: String,
+    origin: Option<String>,
+) -> Buffer {
     pushmount_core::encode_frame(
         EventId { ms: ms as u64, seq: seq as u64 },
         &topic,
         &payload,
+        origin.as_deref(),
     )
     .into()
 }

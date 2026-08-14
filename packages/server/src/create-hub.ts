@@ -101,6 +101,43 @@ export interface HandlerOptions<Req> {
    * Defaults to identity, which is correct for Express and plain `node:http`.
    */
   toNodeRequest?: (req: Req) => IncomingMessage
+  /**
+   * Re-runs `authorize` on live connections every this many milliseconds. Default 0 —
+   * off.
+   *
+   * §4.3's authorization runs once, at connect, and a stream then outlives the decision
+   * that permitted it: the polling this library replaces re-authorized on every request,
+   * and a long-lived stream does not. That is the largest hole in the headline claim,
+   * and this is the pull-shaped half of the answer — `hub.disconnect()` is the push-
+   * shaped half, for the logout and permission-change paths you control.
+   *
+   * A connection that loses any of its topics is closed rather than narrowed. The client
+   * reconnects with its cursor and §4.3 runs again, which returns 403 if everything is
+   * now denied and 200 plus a `~denied` frame if only some of it is — so the client
+   * learns exactly what it lost, through paths that already exist, and nothing new
+   * appears on the wire. The cost is one reconnect for a connection that kept most of
+   * its topics; revocation is rare enough for that to be the right trade.
+   *
+   * An `authorize` that throws during revalidation drops the connection. At connect a
+   * throw is a 500, because no stream exists yet; here one does, and its authorization
+   * is unknown — the only safe reading of unknown is no.
+   */
+  revalidateMs?: number
+}
+
+export interface PublishOptions {
+  /**
+   * §6.0 — the id of the client that caused this event, echoed on the frame so that
+   * client can skip it.
+   *
+   * The tab that issues a write sees the result twice: in the write's own response, and
+   * again over the stream. Pass through whatever the writing client sent you — a header
+   * on the mutation, usually — and `@pushmount/client` drops its own echo.
+   *
+   * Opaque and unauthenticated. It says which connection to skip, nothing more; never
+   * read it as an identity.
+   */
+  origin?: string
 }
 
 export interface PublishAck {
@@ -128,6 +165,14 @@ interface Connection {
   readonly appReq: unknown
   readonly res: ServerResponse
   readonly topics: readonly string[]
+  /**
+   * Which `handler()` opened this connection.
+   *
+   * One hub can be mounted more than once — a public feed and an admin feed, say — with
+   * a different `authorize` on each. Revalidation must only ever re-run the authorizer
+   * that admitted a given connection, so each handler marks its own.
+   */
+  readonly owner: symbol
 }
 
 export function createHub(options: CreateHubOptions = {}) {
@@ -149,6 +194,8 @@ export function createHub(options: CreateHubOptions = {}) {
   const keepAliveMs = options.keepAliveMs ?? 20_000
   const onError = options.onError ?? (() => {})
   const connections = new Map<number, Connection>()
+  /** Revalidation intervals, one per handler that asked for one. Cleared by `close`. */
+  const timers = new Set<NodeJS.Timeout>()
   let closed = false
 
   if (options.suppressClusterWarning !== true) {
@@ -172,7 +219,12 @@ export function createHub(options: CreateHubOptions = {}) {
       try {
         // Appending with the backplane's id keeps local history and the shared log in
         // agreement, so a cursor means the same thing in every process.
-        const { frame, targets } = core.append(event.id, event.topic, event.payload)
+        const { frame, targets } = core.append(
+          event.id,
+          event.topic,
+          event.payload,
+          event.origin,
+        )
         fanOut(frame, targets)
       } catch (error) {
         onError(error)
@@ -268,20 +320,24 @@ export function createHub(options: CreateHubOptions = {}) {
      * force a breaking change. Not awaiting is fully supported: errors are routed to
      * `onError` rather than becoming an unhandled rejection.
      */
-    publish(topic: string, data: unknown): Promise<PublishAck> {
+    publish(topic: string, data: unknown, options: PublishOptions = {}): Promise<PublishAck> {
       try {
         if (closed) throw new Error('hub is closed')
         const payload = (typeof data === 'string' ? data : JSON.stringify(data)) ?? ''
+        const origin = options.origin
 
         if (backplane !== undefined) {
-          // Validate before the round trip, so a bad topic fails fast and locally
-          // rather than after a network hop.
+          // Validate before the round trip, so bad input fails fast and locally rather
+          // than after a network hop.
           if (!core.validTopic(topic)) {
             throw new TypeError(`invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
           }
+          if (origin !== undefined && origin !== '' && !core.validOrigin(origin)) {
+            throw new TypeError(`invalid origin: ${JSON.stringify(origin.slice(0, 64))}`)
+          }
           // Delivery happens when this event comes back through onEvent, along with
           // every other process's. One ordering, everywhere.
-          return backplane.publish(topic, payload).then(
+          return backplane.publish(topic, payload, origin).then(
             (id) => ({ id, delivered: deliveredFor(topic) }),
             (error) => {
               onError(error)
@@ -290,7 +346,7 @@ export function createHub(options: CreateHubOptions = {}) {
           )
         }
 
-        const { id, frame, targets } = core.publish(now(), topic, payload)
+        const { id, frame, targets } = core.publish(now(), topic, payload, origin)
         return Promise.resolve({ id, delivered: fanOut(frame, targets) })
       } catch (error) {
         onError(error)
@@ -314,6 +370,9 @@ export function createHub(options: CreateHubOptions = {}) {
      * that permitted it, so a revoked session keeps receiving events until the tab
      * closes — unlike the polling it replaces, which re-authorized every request. This
      * is the escape hatch: call it from logout and permission-change paths.
+     *
+     * The push half of §4.6, in other words. `revalidateMs` on the handler is the pull
+     * half, for revocations that happen somewhere this process never hears about.
      */
     disconnect<Req = IncomingMessage>(predicate: (req: Req) => boolean): number {
       let n = 0
@@ -329,6 +388,8 @@ export function createHub(options: CreateHubOptions = {}) {
     close(): void {
       closed = true
       for (const id of [...connections.keys()]) drop(id)
+      for (const timer of timers) clearInterval(timer)
+      timers.clear()
       if (keepAlive !== undefined) {
         clearInterval(keepAlive)
         keepAlive = undefined
@@ -354,6 +415,45 @@ export function createHub(options: CreateHubOptions = {}) {
       const handlerOptions = (options ?? {}) as HandlerOptions<Req>
       const { authorize, connectionKey } = handlerOptions
       const toNode = handlerOptions.toNodeRequest ?? ((r: Req) => r as IncomingMessage)
+      const owner = Symbol('pushmount.handler')
+
+      const revalidateMs = handlerOptions.revalidateMs ?? 0
+      if (revalidateMs > 0 && authorize !== undefined) {
+        const timer = setInterval(() => {
+          void revalidate()
+        }, revalidateMs)
+        timer.unref?.()
+        timers.add(timer)
+      }
+
+      /**
+       * Re-runs `authorize` for every connection this handler opened.
+       *
+       * Sequential rather than concurrent: an authorizer usually ends in a database or
+       * a cache, and revalidating a thousand idle connections must not become a
+       * thousand simultaneous queries on a timer. Slower is the correct default for
+       * something the user never waits on.
+       */
+      async function revalidate(): Promise<void> {
+        if (closed || authorize === undefined) return
+        for (const conn of [...connections.values()]) {
+          if (conn.owner !== owner) continue
+          // Each authorize is awaited, so the connection may have closed by now.
+          if (connections.get(conn.id) !== conn) continue
+
+          let permitted = true
+          for (const topic of conn.topics) {
+            try {
+              permitted = await authorize(conn.appReq as Req, topic)
+            } catch (error) {
+              onError(error)
+              permitted = false
+            }
+            if (!permitted) break
+          }
+          if (!permitted && connections.get(conn.id) === conn) drop(conn.id)
+        }
+      }
 
       return async (appReq: Req, res: ServerResponse): Promise<void> => {
         // `appReq` is what the framework decorated and what `authorize` sees.
@@ -430,6 +530,7 @@ export function createHub(options: CreateHubOptions = {}) {
           res,
           topics: allowed,
           pending: [],
+          owner,
         }
         connections.set(subscribed.id, conn)
 
@@ -457,7 +558,7 @@ export function createHub(options: CreateHubOptions = {}) {
             // Encoded, not appended: these events belong to the shared log, and pushing
             // them into this process's ring would duplicate what `onEvent` already
             // recorded — out of id order, on every reconnect.
-            replay = shared.events.map((e) => core.encode(e.id, e.topic, e.payload))
+            replay = shared.events.map((e) => core.encode(e.id, e.topic, e.payload, e.origin))
           } catch (error) {
             onError(error)
             // A backplane that cannot answer must not be reported as "nothing missed".

@@ -12,6 +12,8 @@
  */
 
 const MAX_TOPIC_BYTES = 255
+/** §6.0 — an origin is a correlation token, not a name; 64 bytes is generous for one. */
+const MAX_ORIGIN_BYTES = 64
 const RESERVED_PREFIX = 0x7e // '~'
 
 const encoder = new TextEncoder()
@@ -97,6 +99,24 @@ export function validTopic(topic: string): boolean {
 }
 
 /**
+ * §6.0 — origin validation.
+ *
+ * The same rule as a topic, and for the same reason: an origin reaches the wire, so a
+ * value containing LF ends the frame and what follows parses as a new field. Unlike a
+ * topic it arrives from whichever client issued the write, which makes it the more
+ * exposed of the two.
+ */
+export function validOrigin(origin: string): boolean {
+  const n = origin.length
+  if (n === 0 || n > MAX_ORIGIN_BYTES) return false
+  for (let i = 0; i < n; i++) {
+    const c = origin.charCodeAt(i)
+    if (c < 0x20 || c === 0x7f) return false
+  }
+  return utf8Length(origin) <= MAX_ORIGIN_BYTES
+}
+
+/**
  * §6.1 — encode one data frame.
  *
  * The payload is split on every CR, LF or CRLF and each segment becomes its own
@@ -104,8 +124,17 @@ export function validTopic(topic: string): boolean {
  * a blank line ends the frame and the next line parses as `event:` or `id:`. That is
  * conformance vector E2 and it is reachable from any user-supplied string.
  */
-export function encodeFrame(ms: number, seq: number, topic: string, payload: string): Uint8Array {
+export function encodeFrame(
+  ms: number,
+  seq: number,
+  topic: string,
+  payload: string,
+  origin?: string,
+): Uint8Array {
   const out: string[] = [`id: ${ms}-${seq}\n`, `event: ${topic}\n`]
+  // §6.0 — omitted entirely when absent, so a frame without one is byte-identical to
+  // what an implementation that predates the field would produce.
+  if (origin !== undefined && origin !== '') out.push(`origin: ${origin}\n`)
 
   let start = 0
   for (let i = 0; i < payload.length; i++) {
@@ -131,6 +160,14 @@ interface HistoryEntry {
   readonly seq: number
   readonly topic: string
   readonly frame: Uint8Array
+}
+
+/** Shared by `publish` and `append`: validate before anything reaches the wire. */
+function assertOrigin(origin: string | undefined): void {
+  if (origin === undefined || origin === '') return
+  if (!validOrigin(origin)) {
+    throw new TypeError(`invalid origin: ${JSON.stringify(origin.slice(0, 64))}`)
+  }
 }
 
 export interface HubOptions {
@@ -166,11 +203,17 @@ export class Hub {
   }
 
   /** Encodes, assigns an id and appends to history. Fan-out is the handler's job. */
-  publish(nowMs: number, topic: string, payload: string): { id: EventId; frame: Uint8Array } {
+  publish(
+    nowMs: number,
+    topic: string,
+    payload: string,
+    origin?: string,
+  ): { id: EventId; frame: Uint8Array } {
     if (!validTopic(topic)) {
       throw new TypeError(`invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
     }
-    return this.append(this.#nextId(nowMs), topic, payload)
+    assertOrigin(origin)
+    return this.append(this.#nextId(nowMs), topic, payload, origin)
   }
 
   /**
@@ -185,15 +228,21 @@ export class Hub {
    * local assignment — a backplane outage, say — cannot mint an id that has already
    * been used.
    */
-  append(id: EventId, topic: string, payload: string): { id: EventId; frame: Uint8Array } {
+  append(
+    id: EventId,
+    topic: string,
+    payload: string,
+    origin?: string,
+  ): { id: EventId; frame: Uint8Array } {
     if (!validTopic(topic)) {
       throw new TypeError(`invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
     }
+    assertOrigin(origin)
     if (compareIds(id, { ms: this.#lastMs, seq: this.#lastSeq }) > 0) {
       this.#lastMs = id.ms
       this.#lastSeq = id.seq
     }
-    const frame = encodeFrame(id.ms, id.seq, topic, payload)
+    const frame = encodeFrame(id.ms, id.seq, topic, payload, origin)
 
     this.#history.push({ ms: id.ms, seq: id.seq, topic, frame })
     this.#bytes += frame.length

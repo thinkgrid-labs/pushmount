@@ -4,6 +4,7 @@ use crate::codec::{encode_control, encode_frame};
 use crate::history::{Entry, History};
 use crate::id::{EventId, Sequence};
 use crate::registry::{Registry, SubscriberId};
+use crate::origin::{validate_origin, OriginError};
 use crate::topic::{validate_topic, TopicError};
 
 /// Limits, all of which §10 requires to exist even where they default to unbounded.
@@ -78,6 +79,19 @@ pub enum SubscribeError {
     MaxConnectionsPerKey,
 }
 
+/// Why a publish was refused.
+///
+/// Both variants are caller errors rather than request failures: a topic and an origin
+/// are supplied by application code, not parsed off the wire, so a binding surfaces these
+/// as a thrown error rather than a status code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishError {
+    /// A topic violated §3.
+    Topic(TopicError),
+    /// An origin violated §6.0.
+    Origin(OriginError),
+}
+
 /// §8.2 — what to do about a subscriber's buffer depth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferVerdict {
@@ -129,11 +143,17 @@ impl Hub {
         now_ms: u64,
         topic: &str,
         payload: &str,
-    ) -> Result<PublishEffect, TopicError> {
-        validate_topic(topic)?;
+        origin: Option<&str>,
+    ) -> Result<PublishEffect, PublishError> {
+        validate_topic(topic).map_err(PublishError::Topic)?;
+        // Validated before an id is drawn: a rejected publish must not consume one, or
+        // the sequence develops holes that look like lost events to anyone auditing it.
+        if let Some(origin) = origin.filter(|o| !o.is_empty()) {
+            validate_origin(origin).map_err(PublishError::Origin)?;
+        }
 
         let id = self.sequence.next(now_ms);
-        let frame = encode_frame(id, topic, payload);
+        let frame = encode_frame(id, topic, payload, origin);
 
         self.registry.matching(topic, &mut self.targets);
         let targets = self.targets.clone();

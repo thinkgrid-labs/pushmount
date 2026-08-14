@@ -20,6 +20,12 @@ export interface BackplaneEvent {
   readonly id: string
   readonly topic: string
   readonly payload: string
+  /**
+   * §6.0 — carried across processes, because the tab that issued the write may be
+   * connected to a different one than the tab's write landed on. An origin that only
+   * survived locally would dedupe on one pod and duplicate on every other.
+   */
+  readonly origin?: string
 }
 
 export interface BackplaneReplay {
@@ -30,7 +36,7 @@ export interface BackplaneReplay {
 
 export interface Backplane {
   /** Records the event and returns the id assigned to it. */
-  publish(topic: string, payload: string): Promise<string>
+  publish(topic: string, payload: string, origin?: string): Promise<string>
 
   /**
    * Registers the sink that receives every event from every process, in id order.

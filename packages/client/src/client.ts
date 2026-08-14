@@ -35,6 +35,19 @@ export interface ClientOptions {
   onDenied?: (topics: readonly string[]) => void
   onError?: (error: unknown) => void
   onStateChange?: (state: ClientState) => void
+  /**
+   * §6.0 — this client's origin id, so it can skip the events it caused itself.
+   *
+   * Send it with your writes (a header on the mutation is the usual place), have the
+   * server pass it to `publish` as `origin`, and the echo that comes back over the
+   * stream is dropped here — the tab that acted has already applied the write's own
+   * response, and applying it again is the double-render that reads as a bug.
+   *
+   * Generated per client when omitted, so the feature costs nothing to adopt: read
+   * `client.originId` and attach it. Opaque and unauthenticated — it says which
+   * connection to skip and nothing more.
+   */
+  originId?: string
   /** §9.1 — collapses a render pass worth of mounts into one connection. */
   debounceMs?: number
   baseBackoffMs?: number
@@ -44,7 +57,10 @@ export interface ClientOptions {
 }
 
 export class Client {
-  readonly #options: Required<Omit<ClientOptions, 'initialCursor'>> & { initialCursor?: string }
+  readonly #options: Required<Omit<ClientOptions, 'initialCursor' | 'originId'>> & {
+    initialCursor?: string
+  }
+  readonly #originId: string
   readonly #handlers = new Map<string, Set<Handler>>()
   /**
    * Listeners registered after construction — see `onGap` and `onStateChange` below.
@@ -64,6 +80,8 @@ export class Client {
   #openTopicsKey = ''
   #attempt = 0
   #closed = false
+  /** Stopped by a 400 or 403 rather than by `close()`. Cleared by `reconnect()`. */
+  #fatal = false
   /** Diagnostics — the connection-reuse tests assert on this. */
   #connections = 0
 
@@ -80,6 +98,7 @@ export class Client {
       fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
       ...(options.initialCursor !== undefined && { initialCursor: options.initialCursor }),
     }
+    this.#originId = options.originId ?? randomOrigin()
     this.#cursor = options.initialCursor
   }
 
@@ -91,8 +110,30 @@ export class Client {
     return this.#cursor
   }
 
+  /**
+   * §6.0 — this client's origin id. Attach it to your writes.
+   *
+   * ```js
+   * fetch('/api/orders', { method: 'POST', headers: { 'x-origin': client.originId } })
+   * ```
+   */
+  get originId(): string {
+    return this.#originId
+  }
+
   get connectionCount(): number {
     return this.#connections
+  }
+
+  /**
+   * True when the server rejected the stream with a 400 or 403 and the client stopped.
+   *
+   * `state` alone cannot tell you this: it reads `closed` both for a client someone
+   * called `close()` on and for one the server turned away, and only the second is
+   * worth showing a "sign in again" prompt for. Cleared by `reconnect()`.
+   */
+  get rejected(): boolean {
+    return this.#fatal
   }
 
   subscribe(topic: string, handler: Handler): () => void {
@@ -140,6 +181,35 @@ export class Client {
     return () => {
       this.#stateListeners.delete(listener)
     }
+  }
+
+  /**
+   * Connects again now, from whatever state the client is in.
+   *
+   * Two uses, and the first is the one that matters. A 400 or 403 stops the client for
+   * good — see `#run` — so a session that expired mid-stream leaves a dead client that
+   * no amount of waiting will revive. Once the application has re-authenticated, this
+   * is how it says so. Wire it to the same place that handles a 401 from your ordinary
+   * API calls.
+   *
+   * The second is impatience: it drops any live connection and reconnects immediately
+   * with the backoff reset, for a "reconnect now" control or a `visibilitychange`
+   * handler that does not want to wait out a 30-second backoff.
+   *
+   * Resuming is unaffected — the cursor is kept, so this replays rather than restarts.
+   * A client that has been `close()`d stays closed; that is a deliberate end of life,
+   * not a failure to recover from.
+   */
+  reconnect(): void {
+    if (this.#closed) return
+    this.#fatal = false
+    this.#attempt = 0
+    this.#abort?.abort()
+    this.#abort = undefined
+    // Forces `#sync` to treat the current topic set as changed. Without it a client
+    // whose topics never varied would compare equal and decline to do anything.
+    this.#openTopicsKey = ''
+    this.#scheduleSync()
   }
 
   close(): void {
@@ -232,7 +302,11 @@ export class Client {
 
         if (!res.ok) {
           if (res.status === 400 || res.status === 403) {
-            // Not transient. Retrying cannot fix a rejected topic or a denied one.
+            // Not transient. Retrying cannot fix a rejected topic or a denied one, and
+            // a backoff loop against a 403 is just a slow denial-of-service against
+            // your own server. Recovery is explicit: `reconnect()`, once the
+            // application has done something about it — logged back in, usually.
+            this.#fatal = true
             this.#options.onError(
               new Error(`pushmount: stream rejected with ${res.status}`),
             )
@@ -314,6 +388,11 @@ export class Client {
           if (this.#cursor !== undefined && compareIds(event.id, this.#cursor) <= 0) continue
           this.#cursor = event.id
 
+          // §6.0 — our own write, coming back. The cursor advances first and on purpose:
+          // skipping that too would make every skipped event replay on the next
+          // reconnect, and a busy tab would re-receive its own history forever.
+          if (event.origin !== undefined && event.origin === this.#originId) continue
+
           const set = this.#handlers.get(event.event)
           if (set === undefined) continue
           for (const handler of [...set]) {
@@ -373,4 +452,19 @@ export class Client {
 
 export function createClient(options: ClientOptions): Client {
   return new Client(options)
+}
+
+/**
+ * A per-client origin id.
+ *
+ * `crypto.randomUUID` where it exists — every browser this library targets, and Node 19+
+ * — with a plain random fallback so a client constructed in an exotic runtime still gets
+ * one rather than throwing. Uniqueness only has to hold among the tabs one user has
+ * open; §6.0 gives the value no authority, so a collision costs a skipped render, not a
+ * leak.
+ */
+function randomOrigin(): string {
+  const c: { randomUUID?: () => string } | undefined = globalThis.crypto
+  if (typeof c?.randomUUID === 'function') return c.randomUUID()
+  return `o-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`
 }
