@@ -55,12 +55,13 @@ after(async () => {
 })
 
 /** One hub on its own HTTP server, sharing `key` with any other node in the test. */
-async function node(key, hubOptions = {}) {
+async function node(key, hubOptions = {}, backplaneOptions = {}) {
   const backplane = await createRedisBackplane({
     redis: client(),
     subscriber: client(),
     key,
     blockMs: 100,
+    ...backplaneOptions,
   })
   const hub = createHub({ keepAliveMs: 0, backplane, ...hubOptions })
   const handler = hub.handler()
@@ -283,5 +284,51 @@ test('topics are filtered across the backplane, not just locally', options(), as
   } finally {
     await a.close()
     await b.close()
+  }
+})
+
+test('a cursor further behind than maxReplay is a gap, not an unbounded read', options(), async () => {
+  // The cap is client-facing: `last_event_id` is whatever the request says it is, so
+  // without a bound one request reads the whole retained stream and writes it to one
+  // socket. Three is an absurd cap, chosen so the test states the rule rather than
+  // measuring a machine.
+  const a = await node(key('cap'), {}, { maxReplay: 3 })
+  try {
+    const first = await a.hub.publish('t', 0)
+    for (let i = 1; i <= 6; i++) await a.hub.publish('t', i)
+
+    const sub = await openStream(a.base, `topics=t&last_event_id=${encodeURIComponent(first.id)}`)
+
+    // Six events behind a cap of three: the honest answer is "you missed things", the
+    // dishonest one is a partial replay that leaves a hole the client cannot see.
+    assert.equal(sub.res.headers.get('last-event-id-checkpoint'), 'earliest')
+    await sub.waitFor((f) => f.includes('~gap'))
+    assert.equal(sub.data().length, 0, 'a capped replay must serve no events at all')
+
+    // And the stream is live afterwards — a gap costs the backlog, not the connection.
+    const ack = await a.hub.publish('t', 'after')
+    const frame = await sub.waitFor((f) => f.startsWith(`id: ${ack.id}\n`))
+    // A string payload goes on the wire as-is; only non-strings are JSON-encoded.
+    assert.match(frame, /\ndata: after\n/)
+    sub.close()
+  } finally {
+    await a.close()
+  }
+})
+
+test('a cursor within maxReplay still replays in full', options(), async () => {
+  const a = await node(key('cap-ok'), {}, { maxReplay: 3 })
+  try {
+    const first = await a.hub.publish('t', 0)
+    for (let i = 1; i <= 3; i++) await a.hub.publish('t', i)
+
+    const sub = await openStream(a.base, `topics=t&last_event_id=${encodeURIComponent(first.id)}`)
+    assert.equal(sub.res.headers.get('last-event-id-checkpoint'), first.id)
+    await sub.waitFor((f) => f.includes('\ndata: 3\n'))
+    assert.equal(sub.data().length, 3)
+    assert.ok(!sub.frames.join('').includes('~gap'))
+    sub.close()
+  } finally {
+    await a.close()
   }
 })

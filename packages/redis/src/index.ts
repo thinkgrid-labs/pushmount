@@ -56,6 +56,21 @@ export interface RedisBackplaneOptions {
   maxLen?: number
   /** How long a blocking read waits before looping, in ms. Default 5000. */
   blockMs?: number
+  /**
+   * The most entries one reconnect may scan out of shared history. Default 1000.
+   *
+   * The cursor is supplied by the client, so without a bound a single request saying
+   * `last_event_id=0-0` reads the entire retained stream — `maxLen` entries by default
+   * — re-encodes every one of them and writes the lot to one socket. That is a request
+   * amplification anyone can aim at the hub, and it costs the same whether it is
+   * malicious or a laptop that was closed for a week.
+   *
+   * Past the cap the answer is a gap, not a partial replay. Serving the first N and
+   * stopping would leave a hole between them and live events while the client's cursor
+   * advanced past it — the client would believe it had caught up, which is exactly the
+   * silent loss §8 exists to make impossible. A gap tells it to refetch instead.
+   */
+  maxReplay?: number
   onError?: (error: unknown) => void
 }
 
@@ -69,6 +84,7 @@ export async function createRedisBackplane(
   const key = options.key ?? 'pushmount:events'
   const maxLen = options.maxLen ?? 10_000
   const blockMs = options.blockMs ?? 5_000
+  const maxReplay = options.maxReplay ?? 1_000
   const onError = options.onError ?? (() => {})
 
   let sink: ((event: BackplaneEvent) => void) | undefined
@@ -132,7 +148,12 @@ export async function createRedisBackplane(
       if (oldestId === undefined) return { truncated: false, events: [] }
 
       // `(cursor` is exclusive, which matches "strictly newer than the cursor".
-      const entries = await redis.xrange(key, `(${cursor}`, '+')
+      // One past the cap, so the overflow is detectable rather than inferred.
+      const entries = await redis.xrange(key, `(${cursor}`, '+', 'COUNT', maxReplay + 1)
+      // Too far behind to serve honestly — see `maxReplay`. Reported as a gap, which is
+      // the same answer a trimmed history gives, for the same reason.
+      if (entries.length > maxReplay) return { truncated: true, events: [] }
+
       const wanted = new Set(topics)
       const events: BackplaneEvent[] = []
       for (const [id, fields] of entries) {

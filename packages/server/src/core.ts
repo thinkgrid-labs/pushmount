@@ -49,6 +49,18 @@ export interface HubCore {
    * already-seen.
    */
   append(id: string, topic: string, payload: string): PublishOutcome
+  /**
+   * Encodes a frame for an event whose id was assigned elsewhere, recording nothing.
+   *
+   * This is what replay from a *shared* history needs. Those events are already in the
+   * shared log, and this process either recorded them when they arrived live or was not
+   * running yet; either way the only thing missing is their bytes. Routing them through
+   * `append` instead — which is what this used to do, for want of an encoder — pushed a
+   * duplicate into the local ring on every reconnect, out of id order, which quietly
+   * breaks the ring's "the oldest entry is at the head" assumption that decides whether
+   * a gap gets reported.
+   */
+  encode(id: string, topic: string, payload: string): Uint8Array
   subscribe(
     topics: readonly string[],
     key: string | undefined,

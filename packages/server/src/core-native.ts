@@ -103,6 +103,17 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
       )
     },
 
+    encode(): never {
+      // The binding does expose `encodeFrame`, but it takes the id already split into
+      // its halves — so implementing this here would mean parsing an id in TypeScript,
+      // and §2.1's canonical form (no padding, no signs, no exponents) is precisely the
+      // kind of rule D3 exists to keep in exactly one place. It lands in Rust with the
+      // rest of the backplane path.
+      throw new Error(
+        'the native core does not support a backplane yet; use the TypeScript core',
+      )
+    },
+
     subscribe(topics, key, cursor) {
       try {
         const result = hub.subscribe([...topics], key ?? null, cursor ?? null)

@@ -186,7 +186,15 @@ export function createHub(options: CreateHubOptions = {}) {
   function ensureKeepAlive(): void {
     if (keepAlive !== undefined || keepAliveMs <= 0) return
     keepAlive = setInterval(() => {
-      for (const conn of connections.values()) conn.res.write(FRAME_KEEPALIVE)
+      for (const conn of connections.values()) {
+        // A connection that has not finished opening has no headers on it yet, and
+        // `res.write` would flush Node's implicit ones — losing the content type, the
+        // proxy-buffering hints and the §4.4 checkpoint, and making the `writeHead`
+        // below throw. A keepalive is a liveness ping with nothing to say, so the
+        // right thing is to skip this tick rather than queue it.
+        if (conn.pending !== null) continue
+        conn.res.write(FRAME_KEEPALIVE)
+      }
     }, keepAliveMs)
     // Must not hold the process open — a hub with idle subscribers should still let
     // `node script.js` exit.
@@ -206,8 +214,12 @@ export function createHub(options: CreateHubOptions = {}) {
     connections.delete(id)
     core.remove(id)
     try {
-      if (endFrame !== undefined) conn.res.write(endFrame)
-      conn.res.end()
+      // Same reason the keepalive skips a pending connection: writing a frame before
+      // `writeHead` flushes Node's implicit headers. A connection dropped while still
+      // opening is ended without an epilogue, and the handler sees it is gone and
+      // answers 503 instead.
+      if (endFrame !== undefined && conn.pending === null) conn.res.write(endFrame)
+      if (conn.pending === null) conn.res.end()
     } catch {
       // The socket is already gone; nothing to report.
     }
@@ -421,6 +433,15 @@ export function createHub(options: CreateHubOptions = {}) {
         }
         connections.set(subscribed.id, conn)
 
+        // §8.2 — registered here rather than after the response opens, because the
+        // backplane branch below awaits. A client that aborts during that round trip
+        // would otherwise leave a subscriber nothing ever removes: its `pending` array
+        // grows with every publish for the lifetime of the process.
+        const teardown = (): void => drop(subscribed.id)
+        res.on('close', teardown)
+        req.on('close', teardown)
+        res.on('error', teardown)
+
         let truncated = subscribed.checkpoint === 'earliest'
         let replay: readonly Uint8Array[] = subscribed.replay
 
@@ -433,13 +454,29 @@ export function createHub(options: CreateHubOptions = {}) {
           try {
             const shared = await backplane.replay(cursor, allowed)
             truncated = shared.truncated
-            replay = shared.events.map((e) => core.append(e.id, e.topic, e.payload).frame)
+            // Encoded, not appended: these events belong to the shared log, and pushing
+            // them into this process's ring would duplicate what `onEvent` already
+            // recorded — out of id order, on every reconnect.
+            replay = shared.events.map((e) => core.encode(e.id, e.topic, e.payload))
           } catch (error) {
             onError(error)
             // A backplane that cannot answer must not be reported as "nothing missed".
             truncated = true
             replay = []
           }
+        }
+
+        // The only await in this block is the backplane replay above, and the
+        // connection can be dropped across it — by a client abort, by `disconnect()`,
+        // or by `close()`. Writing headers now would be writing to a response someone
+        // has already finished with.
+        if (connections.get(subscribed.id) !== conn) {
+          try {
+            if (!res.headersSent) fail(res, 503, 'connection closed')
+          } catch {
+            // The socket went away underneath us; there is no one left to tell.
+          }
+          return
         }
 
         const headers: Record<string, string> = {
@@ -471,12 +508,6 @@ export function createHub(options: CreateHubOptions = {}) {
         conn.pending = null
         for (const frame of queued) res.write(frame)
         // ---- end of the atomic block -----------------------------------------
-
-        // §8.2 — both events, or every tab that ever connected leaks a subscriber.
-        const teardown = (): void => drop(subscribed.id)
-        res.on('close', teardown)
-        req.on('close', teardown)
-        res.on('error', teardown)
       }
     },
   }
