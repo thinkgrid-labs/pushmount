@@ -3,7 +3,7 @@
 //
 //   node scripts/set-version.mjs 0.1.0
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 
 const version = process.argv[2]
 if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version ?? '')) {
@@ -11,8 +11,15 @@ if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version ?? '')) {
   process.exit(2)
 }
 
-const PACKAGES = ['packages/server', 'packages/client', 'packages/react']
 const root = new URL('..', import.meta.url).pathname
+
+// Derived rather than listed, for the same reason as check-invariants.mjs: a list left
+// behind by a new package bumps some manifests and not others, and the lockstep
+// invariant then fails on a release that looked done.
+const PACKAGES = readdirSync(`${root}packages`)
+  .map((entry) => `packages/${entry}`)
+  .filter((rel) => statSync(`${root}${rel}`).isDirectory())
+  .sort()
 
 for (const pkg of PACKAGES) {
   const path = `${root}${pkg}/package.json`

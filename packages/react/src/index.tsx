@@ -92,9 +92,11 @@ export function useConnectionState(): ClientState {
   const client = usePushmount()
   const [state, setState] = useState<ClientState>(client.state)
   useEffect(() => {
+    // Read once on subscribe as well as on change: the connection may already have
+    // opened before this component mounted, and a change listener alone would leave
+    // the indicator showing `idle` until something happened to the connection.
     setState(client.state)
-    const id = setInterval(() => setState(client.state), 250)
-    return () => clearInterval(id)
+    return client.onStateChange(setState)
   }, [client])
   return state
 }

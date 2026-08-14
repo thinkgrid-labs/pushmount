@@ -383,3 +383,88 @@ test('events are routed only to handlers of their own topic', async () => {
     await s.close()
   }
 })
+
+// ------------------------------------------------------- listener registration
+
+test('a gap listener fires alongside the constructor callback, not instead of it', async () => {
+  const s = await boot({ hubOptions: { maxHistoryBytes: 400 } })
+  try {
+    const first = await s.hub.publish('a', 'x'.repeat(120))
+    for (let i = 0; i < 20; i++) await s.hub.publish('a', 'x'.repeat(120))
+
+    const fromOption = []
+    const fromListener = []
+    const client = createClient({
+      url: s.url,
+      debounceMs: 20,
+      initialCursor: first.id,
+      onGap: (reason) => fromOption.push(reason),
+    })
+    const unlisten = client.onGap((reason, topics) => fromListener.push({ reason, topics }))
+    client.subscribe('a', () => {})
+
+    await until(() => fromListener.length > 0, 2000, 'gap listener')
+    // The application's own callback must keep working: an adapter registering here
+    // cannot be allowed to take the signal away from the banner the app renders.
+    assert.deepEqual(fromOption, ['history-truncated'])
+    assert.equal(fromListener.length, 1)
+    assert.deepEqual(fromListener[0], { reason: 'history-truncated', topics: ['a'] })
+
+    unlisten()
+    client.close()
+  } finally {
+    await s.close()
+  }
+})
+
+test('a state listener sees the transitions, and stops when unsubscribed', async () => {
+  const s = await boot()
+  const client = createClient({ url: s.url, debounceMs: 20 })
+  try {
+    const seen = []
+    const unlisten = client.onStateChange((state) => seen.push(state))
+    client.subscribe('a', () => {})
+
+    await until(() => client.state === 'open', 2000, 'open')
+    assert.deepEqual(seen, ['connecting', 'open'])
+
+    unlisten()
+    client.close()
+    // `closed` was emitted after the listener left, so it must not appear.
+    assert.deepEqual(seen, ['connecting', 'open'])
+  } finally {
+    client.close()
+    await s.close()
+  }
+})
+
+test('a throwing listener does not stop the others or the connection', async () => {
+  const s = await boot()
+  const client = createClient({
+    url: s.url,
+    debounceMs: 20,
+    onError: () => {},
+  })
+  try {
+    const seen = []
+    client.onStateChange(() => {
+      throw new Error('listener is broken')
+    })
+    client.onStateChange((state) => seen.push(state))
+    client.subscribe('a', () => {})
+
+    await until(() => client.state === 'open', 2000, 'open')
+    assert.deepEqual(seen, ['connecting', 'open'])
+
+    // Deliberately the topic already subscribed to: adding a *new* one changes the
+    // topic set, which reconnects, and a publish issued during that window is the
+    // cold-start loss §5 describes rather than anything to do with listeners.
+    const got = []
+    client.subscribe('a', (data) => got.push(data))
+    await s.hub.publish('a', 'still working')
+    await until(() => got.length === 1, 2000, 'delivery')
+  } finally {
+    client.close()
+    await s.close()
+  }
+})

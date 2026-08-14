@@ -37,7 +37,13 @@ function walk(dir, out = []) {
   return out
 }
 
-const PACKAGES = ['packages/server', 'packages/client', 'packages/react']
+// Derived, not listed. A hardcoded list silently stops checking the moment a package
+// is added — which is exactly what had happened: `fastify` and `redis` were never
+// covered by the dependency or lockstep invariants below.
+const PACKAGES = readdirSync(join(ROOT, 'packages'))
+  .map((entry) => `packages/${entry}`)
+  .filter((rel) => statSync(join(ROOT, rel)).isDirectory())
+  .sort()
 
 console.log('\nrepository invariants\n')
 

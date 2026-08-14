@@ -46,6 +46,16 @@ export interface ClientOptions {
 export class Client {
   readonly #options: Required<Omit<ClientOptions, 'initialCursor'>> & { initialCursor?: string }
   readonly #handlers = new Map<string, Set<Handler>>()
+  /**
+   * Listeners registered after construction — see `onGap` and `onStateChange` below.
+   *
+   * The constructor options stay a single callback each, because they belong to
+   * whoever created the client. These exist because a *second* consumer needs the same
+   * signal: a cache adapter has to invalidate on a gap, and it cannot take the
+   * application's callback away from it.
+   */
+  readonly #gapListeners = new Set<(reason: GapReason, topics: readonly string[]) => void>()
+  readonly #stateListeners = new Set<(state: ClientState) => void>()
 
   #cursor: string | undefined
   #state: ClientState = 'idle'
@@ -106,6 +116,32 @@ export class Client {
     }
   }
 
+  /**
+   * Registers an additional gap listener. Returns its unsubscribe function.
+   *
+   * Fires alongside the `onGap` constructor option, never instead of it — an adapter
+   * subscribing here must not silently disconnect the application's own gap banner.
+   */
+  onGap(listener: (reason: GapReason, topics: readonly string[]) => void): () => void {
+    this.#gapListeners.add(listener)
+    return () => {
+      this.#gapListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Registers a connection-state listener. Returns its unsubscribe function.
+   *
+   * Fires on change only. Read `state` for the current value: a listener registered
+   * after the connection opened would otherwise never hear anything until it dropped.
+   */
+  onStateChange(listener: (state: ClientState) => void): () => void {
+    this.#stateListeners.add(listener)
+    return () => {
+      this.#stateListeners.delete(listener)
+    }
+  }
+
   close(): void {
     this.#closed = true
     if (this.#debounce !== undefined) clearTimeout(this.#debounce)
@@ -120,6 +156,15 @@ export class Client {
     if (this.#state === state) return
     this.#state = state
     this.#options.onStateChange(state)
+    for (const listener of [...this.#stateListeners]) {
+      try {
+        listener(state)
+      } catch (error) {
+        // A listener that throws must not stop the others, and must not surface as an
+        // unhandled rejection out of the read loop.
+        this.#options.onError(error)
+      }
+    }
   }
 
   #topics(): string[] {
@@ -171,6 +216,13 @@ export class Client {
         if (gapFired) return
         gapFired = true
         this.#options.onGap(reason, topics)
+        for (const listener of [...this.#gapListeners]) {
+          try {
+            listener(reason, topics)
+          } catch (error) {
+            this.#options.onError(error)
+          }
+        }
       }
 
       try {
