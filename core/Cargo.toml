@@ -1,6 +1,6 @@
 [package]
-name = "pushmount-core"
-description = "Protocol core for pushmount: ids, topics, SSE framing, history and subscriber bookkeeping. No IO."
+name = "aghoz-core"
+description = "Protocol core for aghoz: ids, topics, SSE framing, history and subscriber bookkeeping. No IO."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

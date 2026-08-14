@@ -16,9 +16,9 @@ import { existsSync } from 'node:fs'
 import { createHub, createNativeCore } from '../dist/index.js'
 
 const require = createRequire(import.meta.url)
-const ADDON = new URL('../../../bindings/node/dist/pushmount.node', import.meta.url).pathname
+const ADDON = new URL('../../../bindings/node/dist/aghoz.node', import.meta.url).pathname
 const available = existsSync(ADDON)
-const options = { skip: available ? false : 'native addon not built (cargo build -p pushmount-node)' }
+const options = { skip: available ? false : 'native addon not built (cargo build -p aghoz-node)' }
 
 let native
 before(() => {

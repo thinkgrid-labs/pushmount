@@ -1,12 +1,12 @@
 //! The header and the source must agree.
 //!
-//! `pushmount.h` is hand-written rather than generated, because the comments in it are
+//! `aghoz.h` is hand-written rather than generated, because the comments in it are
 //! worth more to a binding author than anything a generator produces. The cost of that
 //! choice is drift, so this test pays it back: every exported symbol must be declared,
 //! and every declaration must exist.
 
 const SOURCE: &str = include_str!("../src/lib.rs");
-const HEADER: &str = include_str!("../include/pushmount.h");
+const HEADER: &str = include_str!("../include/aghoz.h");
 
 /// Symbols the source exports via `#[no_mangle] pub extern "C"`.
 fn exported() -> Vec<String> {
@@ -40,7 +40,7 @@ fn every_exported_symbol_is_declared_in_the_header() {
         .collect();
     assert!(
         missing.is_empty(),
-        "exported but undeclared in pushmount.h: {missing:?}"
+        "exported but undeclared in aghoz.h: {missing:?}"
     );
 }
 
@@ -55,7 +55,7 @@ fn every_header_declaration_exists_in_the_source() {
             || trimmed.starts_with("/*")
             || trimmed.starts_with('#')
             || trimmed.starts_with("typedef")
-            || !trimmed.contains("pm_")
+            || !trimmed.contains("ag_")
             || !trimmed.contains('(')
         {
             continue;
@@ -64,7 +64,7 @@ fn every_header_declaration_exists_in_the_source() {
             let head = &trimmed[..open];
             if let Some(name) = head.split_whitespace().last() {
                 let name = name.trim_start_matches('*');
-                if name.starts_with("pm_") && !exported.contains(&name.to_string()) {
+                if name.starts_with("ag_") && !exported.contains(&name.to_string()) {
                     undefined.push(name.to_string());
                 }
             }
@@ -72,7 +72,7 @@ fn every_header_declaration_exists_in_the_source() {
     }
     assert!(
         undefined.is_empty(),
-        "declared in pushmount.h but not exported: {undefined:?}"
+        "declared in aghoz.h but not exported: {undefined:?}"
     );
 }
 
@@ -80,24 +80,24 @@ fn every_header_declaration_exists_in_the_source() {
 fn status_codes_agree_between_source_and_header() {
     // A binding that reads -6 as "topic too long" would map a 429 to a 400.
     for (name, value) in [
-        ("PM_OK", "0"),
-        ("PM_ERR_TOPIC_EMPTY", "-1"),
-        ("PM_ERR_TOPIC_TOO_LONG", "-2"),
-        ("PM_ERR_TOPIC_CONTROL", "-3"),
-        ("PM_ERR_TOPIC_RESERVED", "-4"),
-        ("PM_ERR_TOPIC_COUNT", "-5"),
-        ("PM_ERR_MAX_CONNECTIONS", "-6"),
-        ("PM_ERR_MAX_CONNECTIONS_PER_KEY", "-7"),
-        ("PM_ERR_NULL", "-8"),
-        ("PM_ERR_UTF8", "-9"),
-        ("PM_ERR_PANIC", "-10"),
-        ("PM_ERR_POISONED", "-11"),
-        ("PM_ERR_ORIGIN_EMPTY", "-12"),
-        ("PM_ERR_ORIGIN_TOO_LONG", "-13"),
-        ("PM_ERR_ORIGIN_CONTROL", "-14"),
-        ("PM_BUFFER_SLOW_CONSUMER", "1"),
-        ("PM_CHECKPOINT_EARLIEST", "2"),
-        ("PM_GAP_SLOW_CONSUMER", "1"),
+        ("AG_OK", "0"),
+        ("AG_ERR_TOPIC_EMPTY", "-1"),
+        ("AG_ERR_TOPIC_TOO_LONG", "-2"),
+        ("AG_ERR_TOPIC_CONTROL", "-3"),
+        ("AG_ERR_TOPIC_RESERVED", "-4"),
+        ("AG_ERR_TOPIC_COUNT", "-5"),
+        ("AG_ERR_MAX_CONNECTIONS", "-6"),
+        ("AG_ERR_MAX_CONNECTIONS_PER_KEY", "-7"),
+        ("AG_ERR_NULL", "-8"),
+        ("AG_ERR_UTF8", "-9"),
+        ("AG_ERR_PANIC", "-10"),
+        ("AG_ERR_POISONED", "-11"),
+        ("AG_ERR_ORIGIN_EMPTY", "-12"),
+        ("AG_ERR_ORIGIN_TOO_LONG", "-13"),
+        ("AG_ERR_ORIGIN_CONTROL", "-14"),
+        ("AG_BUFFER_SLOW_CONSUMER", "1"),
+        ("AG_CHECKPOINT_EARLIEST", "2"),
+        ("AG_GAP_SLOW_CONSUMER", "1"),
     ] {
         let in_header = HEADER
             .lines()
@@ -107,7 +107,7 @@ fn status_codes_agree_between_source_and_header() {
                 parts.next();
                 parts.next() == Some(name) && parts.next() == Some(value)
             });
-        assert!(in_header, "{name} must be {value} in pushmount.h");
+        assert!(in_header, "{name} must be {value} in aghoz.h");
 
         let in_source = SOURCE
             .lines()

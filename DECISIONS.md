@@ -5,6 +5,67 @@ Newest first.
 
 ---
 
+## D4 — Name: aghoz, final
+
+**Date:** 15 August 2026 · **Status:** accepted · **Supersedes:** D0
+
+D0 deferred the name and made `pushmount` the working default, on the grounds that the
+open question — *does "push" read as the Web Push API?* — would be answered by evidence
+rather than by argument. It named two triggers to revisit: a real user reporting the
+confusion, or the moment before claiming the npm organisation, which is the first
+irreversible step.
+
+The second trigger arrived, together with a clearer statement of what the name is for: a
+brand, not a description.
+
+### Decision
+
+**`aghoz`** — from the Filipino *agos*, "flow" or "current".
+
+Clear on npm, crates.io and GitHub. Notably it is the *only* spelling in that family that
+is: `agos` itself is taken on both npm and the GitHub organisation, and `agoz`, `aghos`
+and `agosa` all have the organisation taken. The available name and the wanted name
+happened to coincide, which is not the usual outcome of a naming round.
+
+### What was rejected, and why it is worth writing down
+
+**`heartbeat`** — taken on npm, crates.io and GitHub, and colliding with two established
+infrastructure tools (Elastic's Heartbeat, the Linux-HA daemon). The disqualifying problem
+is closer to home though: "heartbeat" is the industry term for the SSE keepalive comment
+that holds a connection open, which this project *sends* — §6.2, `:ka` frames, the
+`keepAliveMs` option. A product cannot be named after one of its own internal mechanisms
+without losing the ability to talk about either.
+
+**`pushmount`** — the incumbent, and a genuinely good description: "mount" names the
+differentiator against Mercure and Centrifugo in one word. But a description is not a
+brand, and "push" in a JavaScript package continues to read as the Web Push API. Its own
+D0 flaw was never resolved, only deferred.
+
+### The cost, and why it was paid now rather than later
+
+§0 keeps the name off the wire and a conformance test enforces it, so the rename was a
+find-and-replace across manifests, imports and prose — no compatibility consequence, and
+the invariant now asserts that "aghoz" is absent from every wire literal, which is the
+proof the rename stayed a rename.
+
+The one part that was *not* free is the C ABI, where every symbol carried a `pm_` prefix.
+Renaming those to `ag_` is an ABI break. It cost nothing today only because `pm_publish`
+had just gained its §6.0 `origin` parameter and `PM_ABI_VERSION` had already been bumped
+1000 → 2000 in the same session — so one break absorbed both changes. A month from now,
+with a Python or Go binding built against it, that would have been a second break and a
+second version. Deciding the name before the first binding ships was worth more than
+deciding it well.
+
+### Known weakness, accepted
+
+`aghoz` cannot be spelled from hearing it: "gh" in English is /g/ in *ghost*, /f/ in
+*rough*, and silent in *through*. A developer who hears the name in a talk cannot reliably
+find it. This is survivable for a library discovered by search and by reading rather than
+by ear, on the condition that the README states the pronunciation and the origin in its
+first screen. That is a documentation obligation, not an afterthought.
+
+---
+
 ## D3 — One Rust core, in-process bindings per language
 
 **Date:** 13 August 2026 · **Status:** accepted · **Supersedes:** D2
@@ -200,7 +261,10 @@ escape hatch if a future engine disagrees.
 
 ## D0 — Name: pushmount, held provisionally
 
-**Date:** 13 August 2026 · **Status:** **deferred — `pushmount` is the working default**
+**Date:** 13 August 2026 · **Status:** **superseded by D4** — the deferral did its job;
+the name was settled on evidence rather than on the speculation this entry declined to
+make. Kept unedited, because a decision log that rewrites what it once concluded is worth
+nothing.
 
 Five rounds of candidates did not converge, because they genuinely are close: each one
 trades a real flaw for a different real flaw. Continuing to deliberate was costing more

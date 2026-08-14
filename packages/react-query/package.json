@@ -1,7 +1,7 @@
 {
-  "name": "@pushmount/react-query",
+  "name": "@aghoz/react-query",
   "version": "0.1.0-rc.0",
-  "description": "TanStack Query adapter for pushmount — map SSE topics onto query keys so live updates and missed updates both flow into the cache. Delete refetchInterval.",
+  "description": "TanStack Query adapter for aghoz — map SSE topics onto query keys so live updates and missed updates both flow into the cache. Delete refetchInterval.",
   "keywords": [
     "server-sent-events",
     "sse",
@@ -22,14 +22,14 @@
     "typescript",
     "cache"
   ],
-  "homepage": "https://github.com/thinkgrid-labs/pushmount#readme",
+  "homepage": "https://github.com/thinkgrid-labs/aghoz#readme",
   "bugs": {
-    "url": "https://github.com/thinkgrid-labs/pushmount/issues"
+    "url": "https://github.com/thinkgrid-labs/aghoz/issues"
   },
   "author": "thinkgrid-labs",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thinkgrid-labs/pushmount.git",
+    "url": "git+https://github.com/thinkgrid-labs/aghoz.git",
     "directory": "packages/react-query"
   },
   "license": "MIT OR Apache-2.0",
@@ -48,10 +48,10 @@
     "react": ">=18"
   },
   "dependencies": {
-    "@pushmount/react": "workspace:*"
+    "@aghoz/react": "workspace:*"
   },
   "devDependencies": {
-    "@pushmount/server": "workspace:*",
+    "@aghoz/server": "workspace:*",
     "@tanstack/react-query": "^5.62.0",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^22.20.1",

@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { createHub } from '@pushmount/server'
+import { createHub } from '@aghoz/server'
 import { createClient } from '../dist/index.js'
 
 async function boot({ hubOptions = {}, authorize } = {}) {

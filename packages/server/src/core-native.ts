@@ -2,14 +2,14 @@
  * [`HubCore`] backed by the Rust core through its Node binding.
  *
  * The native module is *injected* rather than imported. That keeps
- * `@pushmount/server` at zero dependencies and free of a `.node` file — which matters,
+ * `@aghoz/server` at zero dependencies and free of a `.node` file — which matters,
  * because a native artefact in the default install path is what turns "npm install and
  * go" into a prebuild matrix and a bundler conversation. Callers that want the shared
  * core opt in explicitly:
  *
  * ```js
  * import { createRequire } from 'node:module'
- * const native = createRequire(import.meta.url)('@pushmount/node-core')
+ * const native = createRequire(import.meta.url)('@aghoz/node-core')
  * const hub = createHub({ core: createNativeCore(native) })
  * ```
  *

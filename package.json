@@ -1,7 +1,7 @@
 {
-  "name": "pushmount-workspace",
+  "name": "aghoz-workspace",
   "private": true,
-  "description": "pushmount — real-time server push over Server-Sent Events (SSE) that mounts into the app you already have. Monorepo: TypeScript packages, Rust protocol core, conformance corpus.",
+  "description": "aghoz — real-time server push over Server-Sent Events (SSE) that mounts into the app you already have. Monorepo: TypeScript packages, Rust protocol core, conformance corpus.",
   "keywords": [
     "server-sent-events",
     "sse",
@@ -22,14 +22,14 @@
     "redis-streams",
     "monorepo"
   ],
-  "homepage": "https://github.com/thinkgrid-labs/pushmount#readme",
+  "homepage": "https://github.com/thinkgrid-labs/aghoz#readme",
   "bugs": {
-    "url": "https://github.com/thinkgrid-labs/pushmount/issues"
+    "url": "https://github.com/thinkgrid-labs/aghoz/issues"
   },
   "author": "thinkgrid-labs",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thinkgrid-labs/pushmount.git"
+    "url": "git+https://github.com/thinkgrid-labs/aghoz.git"
   },
   "license": "MIT OR Apache-2.0",
   "scripts": {

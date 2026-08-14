@@ -5,7 +5,7 @@
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
-const native = require('./dist/pushmount.node')
+const native = require('./dist/aghoz.node')
 
 export const encodeFrame = (ms, seq, topic, payload, origin) =>
   new Uint8Array(native.encodeFrame(ms, seq, topic, payload, origin ?? null))

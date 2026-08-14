@@ -1,20 +1,20 @@
 /**
- * @pushmount/fastify
+ * @aghoz/fastify
  *
  * Fastify keeps its own request wrapper: decorations like `request.user` live there,
  * while the socket and its close events live on `request.raw`. The handler needs both,
- * which is what `toNodeRequest` exists for — see HandlerOptions in @pushmount/server.
+ * which is what `toNodeRequest` exists for — see HandlerOptions in @aghoz/server.
  *
  * The other half is `reply.hijack()`. Without it Fastify assumes it owns the response
  * lifecycle and will try to serialise and end it, which truncates the stream.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
-import type { createHub } from '@pushmount/server'
+import type { createHub } from '@aghoz/server'
 
 type Hub = ReturnType<typeof createHub>
 
-export interface PushmountFastifyOptions {
+export interface AghozFastifyOptions {
   hub: Hub
   /** Route the stream is mounted at. `${path}/cursor` is registered alongside it. */
   path?: string
@@ -28,15 +28,15 @@ export interface PushmountFastifyOptions {
  * Registers the stream and cursor routes on a Fastify instance.
  *
  * ```js
- * await registerPushmount(app, {
+ * await registerAghoz(app, {
  *   hub,
  *   authorize: (req, topic) => topic.startsWith(`org/${req.user.orgId}/`),
  * })
  * ```
  */
-export async function registerPushmount(
+export async function registerAghoz(
   fastify: FastifyInstance,
-  options: PushmountFastifyOptions,
+  options: AghozFastifyOptions,
 ): Promise<void> {
   const path = options.path ?? '/events'
   const stream = toFastifyHandler(options)
@@ -49,7 +49,7 @@ export async function registerPushmount(
 }
 
 /** The stream route on its own, for callers wiring routes themselves. */
-export function toFastifyHandler(options: PushmountFastifyOptions) {
+export function toFastifyHandler(options: AghozFastifyOptions) {
   const handler = options.hub.handler<FastifyRequest>({
     ...(options.authorize !== undefined && { authorize: options.authorize }),
     ...(options.connectionKey !== undefined && { connectionKey: options.connectionKey }),

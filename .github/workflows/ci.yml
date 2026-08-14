@@ -73,9 +73,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: build the node binding
         run: |
-          cargo build --release -p pushmount-node
+          cargo build --release -p aghoz-node
           mkdir -p bindings/node/dist
-          cp target/release/libpushmount_node.so bindings/node/dist/pushmount.node
+          cp target/release/libaghoz_node.so bindings/node/dist/aghoz.node
       - name: conformance corpus (rust core, via node)
         run: node conformance/runner.mjs ./bindings/node/conformance-adapter.mjs
       - name: the node suite against the rust core
@@ -108,7 +108,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      - run: cargo miri test -p pushmount-abi
+      - run: cargo miri test -p aghoz-abi
 
   # core/ must never acquire unsafe. If this fails, protocol logic has moved into the
   # ABI layer or the forbid attribute has been removed.
@@ -125,7 +125,7 @@ jobs:
           grep -q '#!\[forbid(unsafe_code)\]' core/src/lib.rs \
             || (echo "::error::core/src/lib.rs must keep #![forbid(unsafe_code)]" && exit 1)
       - name: and it still compiles under it
-        run: cargo build -p pushmount-core
+        run: cargo build -p aghoz-core
 
   invariants:
     runs-on: ubuntu-latest

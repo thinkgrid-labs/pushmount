@@ -82,7 +82,7 @@ check('shipped packages declare no third-party runtime dependencies', () => {
   for (const pkg of PACKAGES) {
     const manifest = json(`${pkg}/package.json`)
     for (const dep of Object.keys(manifest.dependencies ?? {})) {
-      if (!dep.startsWith('@pushmount/')) offenders.push(`${manifest.name} → ${dep}`)
+      if (!dep.startsWith('@aghoz/')) offenders.push(`${manifest.name} → ${dep}`)
     }
   }
   if (offenders.length > 0) throw new Error(offenders.join(', '))
@@ -128,8 +128,8 @@ check('the client has no dependency on the server package', () => {
   // the corpus: the two implementations must be independently correct.
   const manifest = json('packages/client/package.json')
   const runtime = Object.keys(manifest.dependencies ?? {})
-  if (runtime.includes('@pushmount/server')) {
-    throw new Error('@pushmount/client must not depend on the server at runtime')
+  if (runtime.includes('@aghoz/server')) {
+    throw new Error('@aghoz/client must not depend on the server at runtime')
   }
   return 'independent'
 })
@@ -139,8 +139,12 @@ check('every conformance vector carries a description', () => {
   // A vector whose failure message does not say what is wrong is worth very little at
   // three in the morning.
   const corpus = json('conformance/vectors.json')
+  // Derived from the corpus rather than listed, because a hardcoded group list silently
+  // stops checking when a category is added — which is exactly what happened when
+  // §6.0's `origin` group arrived and eleven vectors went unchecked.
+  const groups = Object.keys(corpus).filter((k) => Array.isArray(corpus[k]))
   const missing = []
-  for (const group of ['encode', 'topic', 'idOrder', 'monotonic']) {
+  for (const group of groups) {
     for (const vector of corpus[group]) {
       if (typeof vector.desc !== 'string' || vector.desc.length < 8) {
         missing.push(`${group}/${vector.id}`)
@@ -148,11 +152,8 @@ check('every conformance vector carries a description', () => {
     }
   }
   if (missing.length > 0) throw new Error(`undescribed vectors: ${missing.join(', ')}`)
-  const total = ['encode', 'topic', 'idOrder', 'monotonic'].reduce(
-    (n, g) => n + corpus[g].length,
-    0,
-  )
-  return `${total} vectors`
+  const total = groups.reduce((n, g) => n + corpus[g].length, 0)
+  return `${total} vectors across ${groups.length} groups`
 })
 
 // ---------------------------------------------------------------------------

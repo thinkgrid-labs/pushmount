@@ -1,4 +1,8 @@
-<h1 align="center">pushmount</h1>
+<h1 align="center">aghoz</h1>
+
+<p align="center">
+  <sub><em>AH-gohz</em> — from the Filipino <em>agos</em>, "flow".</sub>
+</p>
 
 <p align="center">
   <strong>Real-time server push for apps that already have a backend.</strong><br>
@@ -9,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/thinkgrid-labs/pushmount/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/thinkgrid-labs/pushmount/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/thinkgrid-labs/aghoz/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/thinkgrid-labs/aghoz/actions/workflows/ci.yml/badge.svg"></a>
   <a href="#license"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg"></a>
   <img alt="Node.js 22 or later" src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg">
   <img alt="Zero third-party dependencies" src="https://img.shields.io/badge/third--party%20deps-0-brightgreen.svg">
@@ -24,7 +28,7 @@ app.get('/events', hub.handler({
 
 No second service. No token exchange. No CORS.
 
-**pushmount** is a small, dependency-free real-time push library. It ships today for
+**aghoz** is a small, dependency-free real-time push library. It ships today for
 **Node.js** — **Express**, **Fastify** and **React** — and the protocol is specified and
 conformance-tested independently of any one runtime, so further languages are a binding
 rather than a rewrite. It replaces polling (`refetchInterval`,
@@ -46,7 +50,7 @@ protocol core behind a C ABI for other languages.
 > **The API will change without notice**, and so may the wire protocol until it is
 > tagged. There is no deprecation policy yet because there is nothing to deprecate.
 >
-> **Even the name is provisional.** `pushmount` is a working title held deliberately —
+> **Even the name is provisional.** `aghoz` is a working title held deliberately —
 > see [DECISIONS.md](./DECISIONS.md) D0. The protocol carries the name nowhere, so a
 > rename stays a find-and-replace, and a test enforces that.
 >
@@ -65,7 +69,7 @@ protocol core behind a C ABI for other languages.
 ## Contents
 
 - [Why this exists](#why-this-exists)
-- [How pushmount compares](#how-pushmount-compares)
+- [How aghoz compares](#how-aghoz-compares)
 - [Read this before installing](#read-this-before-installing)
 - [What makes it different](#what-makes-it-different)
 - [Quickstart](#quickstart) — [server](#server--three-additions-to-an-app-you-already-have) · [client](#client) · [collections](#collections-need-a-fold-not-a-cell)
@@ -124,9 +128,9 @@ app you already have, small enough to read in one sitting.
 
 ---
 
-## How pushmount compares
+## How aghoz compares
 
-|  | pushmount | Mercure / Centrifugo | Socket.IO | ElectricSQL / PowerSync / Zero | Hand-rolled SSE |
+|  | aghoz | Mercure / Centrifugo | Socket.IO | ElectricSQL / PowerSync / Zero | Hand-rolled SSE |
 |---|---|---|---|---|---|
 | **Extra service to run** | no — a route in your app | yes | no | yes (sync service) | no |
 | **Authorization** | your existing middleware, one function | JWTs scoped to topics, minted by you | your own handshake code | row/shape rules in the sync layer | yours to write |
@@ -139,7 +143,7 @@ app you already have, small enough to read in one sitting.
 | **Dependencies** | zero | a service + a client | several | a service + a client | zero |
 
 Read that table as scope, not scoring. If you need bidirectional messaging, use
-Socket.IO. If you need offline-first local writes, use a sync engine. pushmount is for
+Socket.IO. If you need offline-first local writes, use a sync engine. aghoz is for
 the case where the server already knows something and the browser should stop asking.
 
 ---
@@ -151,8 +155,8 @@ long-lived connection. There is no workaround and none is planned. If that is yo
 deployment target, stop here.
 
 **Across multiple processes you need a backplane.** By default a `publish` reaches only
-that process's subscribers, and pushmount warns at startup when it can tell it is one
-worker of several. Add `@pushmount/redis` and the limitation goes away — see
+that process's subscribers, and aghoz warns at startup when it can tell it is one
+worker of several. Add `@aghoz/redis` and the limitation goes away — see
 [Multiple processes](#multiple-processes-redis-backplane). Redis is entirely optional;
 without it there are no dependencies at all.
 
@@ -186,7 +190,7 @@ detected and reported through one callback:
   than left to starve, quietly diverging
 
 ```jsx
-<PushmountProvider url="/events" onGap={() => queryClient.invalidateQueries()}>
+<AghozProvider url="/events" onGap={() => queryClient.invalidateQueries()}>
 ```
 
 Wiring that one prop to a refetch makes stale state *impossible* rather than unlikely.
@@ -201,7 +205,7 @@ whole system in ten minutes.
 ## Quickstart
 
 ```
-pnpm add @pushmount/server @pushmount/client @pushmount/react
+pnpm add @aghoz/server @aghoz/client @aghoz/react
 ```
 
 *(Not yet published — see the notice above. For now: clone, `pnpm install`, `pnpm -r build`.)*
@@ -209,7 +213,7 @@ pnpm add @pushmount/server @pushmount/client @pushmount/react
 ### Server — three additions to an app you already have
 
 ```js
-import { createHub } from '@pushmount/server'
+import { createHub } from '@aghoz/server'
 
 const hub = createHub()
 
@@ -242,15 +246,15 @@ Mount order is the entire security model. Everything above the mount has already
 ### Client
 
 ```jsx
-import { PushmountProvider, useTopic } from '@pushmount/react'
+import { AghozProvider, useTopic } from '@aghoz/react'
 
-<PushmountProvider
+<AghozProvider
   url="/events"
   initialCursor={boot.cursor}
   onGap={() => queryClient.invalidateQueries()}
 >
   <App />
-</PushmountProvider>
+</AghozProvider>
 ```
 
 ```jsx
@@ -322,7 +326,7 @@ publish in one process has to reach subscribers in the others. That is what a ba
 does:
 
 ```js
-import { createRedisBackplane } from '@pushmount/redis'
+import { createRedisBackplane } from '@aghoz/redis'
 import Redis from 'ioredis'
 
 const hub = createHub({
@@ -351,11 +355,11 @@ buys an ordering that is identical in every process.
 
 | package | what it is |
 |---|---|
-| `@pushmount/server` | The in-process hub and the HTTP handler for Express and Node. Zero dependencies. |
-| `@pushmount/client` | Framework-agnostic browser client. Zero dependencies. |
-| `@pushmount/react` | React provider and hooks (`useTopic`, `useTopicReducer`). React 18+ peer only. |
-| `@pushmount/fastify` | Fastify adapter. Optional. |
-| `@pushmount/redis` | Redis Streams backplane, for multi-process deployments. Optional. |
+| `@aghoz/server` | The in-process hub and the HTTP handler for Express and Node. Zero dependencies. |
+| `@aghoz/client` | Framework-agnostic browser client. Zero dependencies. |
+| `@aghoz/react` | React provider and hooks (`useTopic`, `useTopicReducer`). React 18+ peer only. |
+| `@aghoz/fastify` | Fastify adapter. Optional. |
+| `@aghoz/redis` | Redis Streams backplane, for multi-process deployments. Optional. |
 
 There is also a Rust protocol core (`core/`) with a C ABI (`abi/`) — see
 [Why Rust?](#why-rust).
@@ -418,7 +422,7 @@ entire Node test suite against it — so it is ready for the day a second langua
 
 ## FAQ
 
-### Is pushmount a WebSocket library?
+### Is aghoz a WebSocket library?
 
 No. It uses Server-Sent Events over ordinary HTTP, one direction only: server to client.
 Writes keep going through the REST or RPC API you already have. If you need the browser
@@ -443,18 +447,18 @@ Heroku, your own box. See [Read this before installing](#read-this-before-instal
 
 Only if you run more than one process. A single Node process needs nothing at all — zero
 dependencies. Under pm2 cluster mode, Kubernetes replicas, or any horizontal scaling, add
-`@pushmount/redis`. pushmount warns at startup when it can detect that it is one worker
+`@aghoz/redis`. aghoz warns at startup when it can detect that it is one worker
 of several.
 
 ### How is this different from Mercure or Centrifugo?
 
 Those are standalone hubs: a separate service that has never seen your user table, so
 authorization has to be rebuilt as a token subsystem — minting, scoping, expiry,
-rotation, revocation. pushmount is a route inside your app, mounted after your existing
+rotation, revocation. aghoz is a route inside your app, mounted after your existing
 auth middleware, so authorization is a function of the request you already parsed. The
-tradeoff is real: a standalone hub scales independently of your app, and pushmount
+tradeoff is real: a standalone hub scales independently of your app, and aghoz
 deliberately does not, until the standalone binary lands. See
-[How pushmount compares](#how-pushmount-compares).
+[How aghoz compares](#how-aghoz-compares).
 
 ### How do I replace `refetchInterval` polling in React Query?
 
@@ -503,7 +507,7 @@ core with a C ABI and a Node binding, not shipped.
 - **Nest adapter.** Note that Nest's own `@Sse()` decorator cannot be used — it writes
   the response itself, so the checkpoint header is unreachable and gap detection becomes
   impossible. Same reason the client avoids `EventSource`.
-- Vue and Svelte clients — thin wrappers over `@pushmount/client`.
+- Vue and Svelte clients — thin wrappers over `@aghoz/client`.
 - `originId` echoed on frames, so the tab that issued a write can skip its own event
   instead of applying it twice (once from the HTTP response, once from the stream).
 - A `revalidate` interval, so a long-lived stream re-checks authorization rather than
@@ -529,7 +533,7 @@ core with a C ABI and a Node binding, not shipped.
 ### v1.0
 
 - The standalone Rust hub, speaking the same wire format, for teams who outgrow
-  in-process. `@pushmount/client` works against either unchanged: Node is the on-ramp,
+  in-process. `@aghoz/client` works against either unchanged: Node is the on-ramp,
   the binary is the escape hatch.
 
 ### Ideas, not commitments

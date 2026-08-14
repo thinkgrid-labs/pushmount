@@ -13,11 +13,11 @@ import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import Redis from 'ioredis'
-import { createHub } from '@pushmount/server'
+import { createHub } from '@aghoz/server'
 import { createRedisBackplane } from '../dist/index.js'
 
 const PORT = Number(process.env.REDIS_PORT ?? 6390)
-const KEY = `pushmount:test:${process.pid}`
+const KEY = `aghoz:test:${process.pid}`
 
 // Probed at module load, not in a `before` hook: node:test evaluates a test's `skip`
 // option when the test is *defined*, which happens before any hook runs. Probing in
@@ -47,7 +47,7 @@ function client() {
 after(async () => {
   if (reachable) {
     const c = new Redis({ port: PORT })
-    const keys = await c.keys('pushmount:test:*')
+    const keys = await c.keys('aghoz:test:*')
     if (keys.length > 0) await c.del(...keys)
     c.disconnect()
   }

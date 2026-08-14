@@ -308,7 +308,7 @@ export class Client {
             // application has done something about it — logged back in, usually.
             this.#fatal = true
             this.#options.onError(
-              new Error(`pushmount: stream rejected with ${res.status}`),
+              new Error(`aghoz: stream rejected with ${res.status}`),
             )
             this.#setState('closed')
             return

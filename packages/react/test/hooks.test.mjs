@@ -5,7 +5,7 @@ import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { JSDOM } from 'jsdom'
-import { createHub } from '@pushmount/server'
+import { createHub } from '@aghoz/server'
 
 // jsdom must exist before React or Testing Library is imported.
 const dom = new JSDOM('<!doctype html><html><body></body></html>', {
@@ -27,9 +27,9 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 const React = (await import('react')).default
 const { render, cleanup, waitFor, act } = await import('@testing-library/react')
-const { PushmountProvider, useTopic, useTopicEffect, useTopicReducer, usePushmount } =
+const { AghozProvider, useTopic, useTopicEffect, useTopicReducer, useAghoz } =
   await import('../dist/index.js')
-const { createClient } = await import('@pushmount/client')
+const { createClient } = await import('@aghoz/client')
 
 const h = React.createElement
 
@@ -70,12 +70,12 @@ beforeEach(async () => {
 async function mount(children, props = {}) {
   const ref = { current: null }
   function Probe() {
-    ref.current = usePushmount()
+    ref.current = useAghoz()
     return null
   }
   const list = Array.isArray(children) ? children : [children]
   const screen = render(
-    h(PushmountProvider, { url, ...props }, [h(Probe, { key: '__probe' }), ...list]),
+    h(AghozProvider, { url, ...props }, [h(Probe, { key: '__probe' }), ...list]),
   )
   await waitFor(() => assert.equal(ref.current?.state, 'open'), { timeout: 4000 })
   return { screen, client: ref }
@@ -214,7 +214,7 @@ test('a supplied client is not closed by the provider', async () => {
     useTopic('t', 0)
     return null
   }
-  render(h(PushmountProvider, { url, client: own }, h(Probe, { key: 'p' })))
+  render(h(AghozProvider, { url, client: own }, h(Probe, { key: 'p' })))
   await waitFor(() => assert.equal(own.state, 'open'), { timeout: 4000 })
 
   cleanup()
@@ -242,6 +242,6 @@ test('useTopic outside a provider fails loudly', () => {
     useTopic('t', 0)
     return null
   }
-  assert.throws(() => render(h(Orphan)), /PushmountProvider/)
+  assert.throws(() => render(h(Orphan)), /AghozProvider/)
   cleanup()
 })

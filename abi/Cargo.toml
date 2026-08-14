@@ -1,6 +1,6 @@
 [package]
-name = "pushmount-abi"
-description = "Stable C ABI over pushmount-core. The single surface every language binding targets."
+name = "aghoz-abi"
+description = "Stable C ABI over aghoz-core. The single surface every language binding targets."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,10 +12,10 @@ categories.workspace = true
 readme = "../README.md"
 
 [lib]
-name = "pushmount"
+name = "aghoz"
 # cdylib for dynamic FFI (Python ctypes, Ruby FFI, Node); staticlib for cgo and for
 # anyone who would rather link it in.
 crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
-pushmount-core = { path = "../core" }
+aghoz-core = { path = "../core" }

@@ -5,7 +5,7 @@
 //! reason more than one implementation of this protocol is a defensible position, so it
 //! must never fork.
 
-use pushmount_core::{encode_frame, validate_origin, validate_topic, EventId, Hub, HubConfig};
+use aghoz_core::{encode_frame, validate_origin, validate_topic, EventId, Hub, HubConfig};
 use serde_json::Value;
 
 fn corpus() -> Value {

@@ -1,23 +1,23 @@
-// A complete Express + React app using pushmount. Run it with:
+// A complete Express + React app using aghoz. Run it with:
 //
 //   pnpm start        then open http://localhost:3000
 //
-// Everything specific to pushmount is marked below. There are three additions to what
+// Everything specific to aghoz is marked below. There are three additions to what
 // would otherwise be an ordinary Express app, and no new infrastructure.
 
 import express from 'express'
 import compression from 'compression'
 import { readFileSync } from 'node:fs'
 import { build } from 'esbuild'
-import { createHub } from '@pushmount/server'
+import { createHub } from '@aghoz/server'
 
 const PORT = process.env.PORT ?? 3000
 
-// ── pushmount, 1 of 3: create the hub ────────────────────────────────────────
+// ── aghoz, 1 of 3: create the hub ────────────────────────────────────────
 const hub = createHub({
   maxHistoryBytes: 8 * 1024 * 1024,
   maxBufferBytes: 1024 * 1024,
-  onError: (error) => console.error('[pushmount]', error),
+  onError: (error) => console.error('[aghoz]', error),
 })
 
 const app = express()
@@ -28,14 +28,14 @@ app.use(compression())
 app.use(express.json())
 
 // Stands in for whatever session middleware the host app already has. The point is
-// that it runs BEFORE the mount below, so req.user exists by the time pushmount sees
+// that it runs BEFORE the mount below, so req.user exists by the time aghoz sees
 // the request — which is why authorization needs no tokens.
 app.use((req, _res, next) => {
   req.user = { id: 'u_1', orgId: req.query.org ?? '42' }
   next()
 })
 
-// ── pushmount, 2 of 3: mount the stream ──────────────────────────────────────
+// ── aghoz, 2 of 3: mount the stream ──────────────────────────────────────
 app.get(
   '/events',
   hub.handler({
@@ -45,7 +45,7 @@ app.get(
 )
 app.get('/events/cursor', hub.cursorHandler())
 
-// ── the app's own state and API — unchanged by pushmount ─────────────────────
+// ── the app's own state and API — unchanged by aghoz ─────────────────────
 const state = { revenue: 41200, orders: [] }
 let nextOrder = 918
 
@@ -60,7 +60,7 @@ app.post('/api/orders', (req, res) => {
 
   res.json(order)
 
-  // ── pushmount, 3 of 3: publish from the write path you already have ────────
+  // ── aghoz, 3 of 3: publish from the write path you already have ────────
   // After the response, so the caller's latency is unchanged. Note that this is not
   // transactional with the write above: a crash in between loses the event silently.
   hub.publish(`org/${req.user.orgId}/orders`, order)

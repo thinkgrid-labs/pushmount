@@ -10,10 +10,10 @@ importers:
 
   examples/express-react:
     dependencies:
-      '@pushmount/react':
+      '@aghoz/react':
         specifier: workspace:*
         version: link:../../packages/react
-      '@pushmount/server':
+      '@aghoz/server':
         specifier: workspace:*
         version: link:../../packages/server
       compression:
@@ -35,7 +35,7 @@ importers:
 
   packages/client:
     devDependencies:
-      '@pushmount/server':
+      '@aghoz/server':
         specifier: workspace:*
         version: link:../server
       '@types/node':
@@ -47,7 +47,7 @@ importers:
 
   packages/fastify:
     devDependencies:
-      '@pushmount/server':
+      '@aghoz/server':
         specifier: workspace:*
         version: link:../server
       '@types/node':
@@ -62,11 +62,11 @@ importers:
 
   packages/react:
     dependencies:
-      '@pushmount/client':
+      '@aghoz/client':
         specifier: workspace:*
         version: link:../client
     devDependencies:
-      '@pushmount/server':
+      '@aghoz/server':
         specifier: workspace:*
         version: link:../server
       '@testing-library/react':
@@ -96,11 +96,11 @@ importers:
 
   packages/react-query:
     dependencies:
-      '@pushmount/react':
+      '@aghoz/react':
         specifier: workspace:*
         version: link:../react
     devDependencies:
-      '@pushmount/server':
+      '@aghoz/server':
         specifier: workspace:*
         version: link:../server
       '@tanstack/react-query':
@@ -133,7 +133,7 @@ importers:
 
   packages/redis:
     dependencies:
-      '@pushmount/server':
+      '@aghoz/server':
         specifier: workspace:*
         version: link:../server
     devDependencies:

@@ -1,5 +1,5 @@
 /**
- * @pushmount/server
+ * @aghoz/server
  *
  * Server push that mounts into an application you already have. The hub is an object
  * in your process, so your existing authentication middleware runs before it and

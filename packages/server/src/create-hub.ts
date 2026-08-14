@@ -132,7 +132,7 @@ export interface PublishOptions {
    *
    * The tab that issues a write sees the result twice: in the write's own response, and
    * again over the stream. Pass through whatever the writing client sent you — a header
-   * on the mutation, usually — and `@pushmount/client` drops its own echo.
+   * on the mutation, usually — and `@aghoz/client` drops its own echo.
    *
    * Opaque and unauthenticated. It says which connection to skip, nothing more; never
    * read it as an identity.
@@ -202,7 +202,7 @@ export function createHub(options: CreateHubOptions = {}) {
     const supervisor = detectCluster()
     if (supervisor !== null) {
       console.warn(
-        `\n[pushmount] This process looks like one of several (${supervisor}), and the hub ` +
+        `\n[aghoz] This process looks like one of several (${supervisor}), and the hub ` +
           `is in-memory.\n` +
           `           A publish here reaches only THIS process's subscribers. Clients ` +
           `connected to\n` +
@@ -415,7 +415,7 @@ export function createHub(options: CreateHubOptions = {}) {
       const handlerOptions = (options ?? {}) as HandlerOptions<Req>
       const { authorize, connectionKey } = handlerOptions
       const toNode = handlerOptions.toNodeRequest ?? ((r: Req) => r as IncomingMessage)
-      const owner = Symbol('pushmount.handler')
+      const owner = Symbol('aghoz.handler')
 
       const revalidateMs = handlerOptions.revalidateMs ?? 0
       if (revalidateMs > 0 && authorize !== undefined) {

@@ -1,5 +1,5 @@
 /**
- * @pushmount/redis — a backplane on Redis Streams.
+ * @aghoz/redis — a backplane on Redis Streams.
  *
  * Streams are the right primitive rather than pub/sub, for one reason that decides
  * everything else: **`XADD` assigns exactly the `<ms>-<seq>` id this protocol uses**.
@@ -16,7 +16,7 @@
  * same handful of commands.
  */
 
-import type { Backplane, BackplaneEvent, BackplaneReplay } from '@pushmount/server'
+import type { Backplane, BackplaneEvent, BackplaneReplay } from '@aghoz/server'
 
 /** The commands this backplane needs. Both ioredis and node-redis satisfy it. */
 export interface RedisLike {
@@ -44,7 +44,7 @@ export interface RedisBackplaneOptions {
    * common way a Redis Streams integration is got wrong.
    */
   subscriber: RedisLike
-  /** Stream key. Default `pushmount:events`. */
+  /** Stream key. Default `aghoz:events`. */
   key?: string
   /**
    * Approximate cap on retained events — the shared equivalent of `maxHistoryBytes`.
@@ -83,7 +83,7 @@ export async function createRedisBackplane(
   options: RedisBackplaneOptions,
 ): Promise<Backplane> {
   const { redis, subscriber } = options
-  const key = options.key ?? 'pushmount:events'
+  const key = options.key ?? 'aghoz:events'
   const maxLen = options.maxLen ?? 10_000
   const blockMs = options.blockMs ?? 5_000
   const maxReplay = options.maxReplay ?? 1_000

@@ -8,7 +8,7 @@ import { test, before, after, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { JSDOM } from 'jsdom'
-import { createHub } from '@pushmount/server'
+import { createHub } from '@aghoz/server'
 
 // jsdom must exist before React or Testing Library is imported.
 const dom = new JSDOM('<!doctype html><html><body></body></html>', {
@@ -30,7 +30,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 const React = (await import('react')).default
 const { render, cleanup, waitFor, act } = await import('@testing-library/react')
 const { QueryClient, QueryClientProvider, useQuery } = await import('@tanstack/react-query')
-const { PushmountProvider, usePushmount } = await import('@pushmount/react')
+const { AghozProvider, useAghoz } = await import('@aghoz/react')
 const { useTopicInvalidation, useTopicQueryData } = await import('../dist/index.js')
 
 const h = React.createElement
@@ -77,7 +77,7 @@ async function mount(children, providerProps = {}, { waitOpen = true } = {}) {
   const qc = queryClient()
   const ref = { current: null }
   function Probe() {
-    ref.current = usePushmount()
+    ref.current = useAghoz()
     return null
   }
   const list = Array.isArray(children) ? children : [children]
@@ -85,7 +85,7 @@ async function mount(children, providerProps = {}, { waitOpen = true } = {}) {
     h(
       QueryClientProvider,
       { client: qc },
-      h(PushmountProvider, { url, ...providerProps }, [h(Probe, { key: '__probe' }), ...list]),
+      h(AghozProvider, { url, ...providerProps }, [h(Probe, { key: '__probe' }), ...list]),
     ),
   )
   if (waitOpen) await waitFor(() => assert.equal(ref.current?.state, 'open'), { timeout: 4000 })

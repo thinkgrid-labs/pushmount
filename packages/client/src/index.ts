@@ -1,7 +1,7 @@
 /**
- * @pushmount/client
+ * @aghoz/client
  *
- * A framework-agnostic browser client for the pushmount wire protocol.
+ * A framework-agnostic browser client for the aghoz wire protocol.
  *
  * Built on `fetch` and `ReadableStream` rather than `EventSource`, because
  * `EventSource` cannot read response headers and the checkpoint that reports missed

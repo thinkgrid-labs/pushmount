@@ -8,8 +8,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Fastify from 'fastify'
-import { createHub } from '@pushmount/server'
-import { registerPushmount } from '../dist/index.js'
+import { createHub } from '@aghoz/server'
+import { registerAghoz } from '../dist/index.js'
 
 async function boot({ authorize, connectionKey } = {}) {
   const hub = createHub({ keepAliveMs: 0 })
@@ -22,7 +22,7 @@ async function boot({ authorize, connectionKey } = {}) {
     request.user = { id: request.query.u ?? 'u_1', orgId: request.query.org ?? '42' }
   })
 
-  await registerPushmount(app, {
+  await registerAghoz(app, {
     hub,
     ...(authorize !== undefined && { authorize }),
     ...(connectionKey !== undefined && { connectionKey }),
@@ -126,7 +126,7 @@ test('connectionKey is keyed by the app’s own user id', async () => {
   app.addHook('onRequest', async (request) => {
     request.user = { id: request.query.u }
   })
-  await registerPushmount(app, { hub, connectionKey: (req) => req.user.id })
+  await registerAghoz(app, { hub, connectionKey: (req) => req.user.id })
   await app.listen({ port: 0, host: '127.0.0.1' })
   const base = `http://127.0.0.1:${app.server.address().port}`
 

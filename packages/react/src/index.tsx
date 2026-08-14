@@ -1,5 +1,5 @@
 /**
- * @pushmount/react
+ * @aghoz/react
  *
  * One connection for the whole tree, and a hook where you render.
  */
@@ -21,11 +21,11 @@ import {
   type ClientState,
   type EventMeta,
   type GapReason,
-} from '@pushmount/client'
+} from '@aghoz/client'
 
-const PushmountContext = createContext<Client | null>(null)
+const AghozContext = createContext<Client | null>(null)
 
-export interface PushmountProviderProps {
+export interface AghozProviderProps {
   /** The mounted path, e.g. `/events`. */
   url: string
   /**
@@ -48,7 +48,7 @@ export interface PushmountProviderProps {
   children?: ReactNode
 }
 
-export function PushmountProvider(props: PushmountProviderProps): ReactNode {
+export function AghozProvider(props: AghozProviderProps): ReactNode {
   const { url, initialCursor, onGap, onDenied, onError, client: provided, children } = props
 
   // Callbacks live behind a ref so that a parent re-render with new inline functions
@@ -76,20 +76,20 @@ export function PushmountProvider(props: PushmountProviderProps): ReactNode {
     return () => client.close()
   }, [client, provided])
 
-  return createElement(PushmountContext.Provider, { value: client }, children)
+  return createElement(AghozContext.Provider, { value: client }, children)
 }
 
-export function usePushmount(): Client {
-  const client = useContext(PushmountContext)
+export function useAghoz(): Client {
+  const client = useContext(AghozContext)
   if (client === null) {
-    throw new Error('usePushmount must be used inside a <PushmountProvider>')
+    throw new Error('useAghoz must be used inside a <AghozProvider>')
   }
   return client
 }
 
 /** The live connection state, for a status indicator. */
 export function useConnectionState(): ClientState {
-  const client = usePushmount()
+  const client = useAghoz()
   const [state, setState] = useState<ClientState>(client.state)
   useEffect(() => {
     // Read once on subscribe as well as on change: the connection may already have
@@ -126,7 +126,7 @@ function useParse<T>(options?: TopicOptions<T>): (raw: string) => T {
  * you that order, not the list containing it. Use `useTopicReducer` for collections.
  */
 export function useTopic<T>(topic: string, initial: T, options?: TopicOptions<T>): T {
-  const client = usePushmount()
+  const client = useAghoz()
   const parse = useParse(options)
   const [value, setValue] = useState<T>(initial)
 
@@ -145,7 +145,7 @@ export function useTopicEffect<T = unknown>(
   fn: (value: T, meta: EventMeta) => void,
   options?: TopicOptions<T>,
 ): void {
-  const client = usePushmount()
+  const client = useAghoz()
   const parse = useParse(options)
   // Behind a ref so an inline callback does not resubscribe on every render, which
   // would churn the topic set and, via §9.3, reconnect the shared stream.
@@ -172,7 +172,7 @@ export function useTopicReducer<S, T = unknown>(
   initial: S,
   options?: TopicOptions<T>,
 ): S {
-  const client = usePushmount()
+  const client = useAghoz()
   const parse = useParse(options)
   const [state, setState] = useState<S>(initial)
 
@@ -189,4 +189,4 @@ export function useTopicReducer<S, T = unknown>(
   return state
 }
 
-export type { Client, ClientState, GapReason, EventMeta } from '@pushmount/client'
+export type { Client, ClientState, GapReason, EventMeta } from '@aghoz/client'

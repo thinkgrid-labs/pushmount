@@ -1,5 +1,5 @@
 /**
- * @pushmount/react-query — topics mapped onto query keys.
+ * @aghoz/react-query — topics mapped onto query keys.
  *
  * TanStack Query already owns fetching, caching and staleness. What it has no way to
  * know is *when* the server's answer changed, so the usual approximation is
@@ -24,8 +24,8 @@
 
 import { useEffect, useMemo, useRef } from 'react'
 import { useQueryClient, type QueryKey } from '@tanstack/react-query'
-import { usePushmount } from '@pushmount/react'
-import type { EventMeta } from '@pushmount/react'
+import { useAghoz } from '@aghoz/react'
+import type { EventMeta } from '@aghoz/react'
 
 export interface TopicQueryOptions<T> {
   /**
@@ -121,7 +121,7 @@ export function useTopicInvalidation(
   queryKey: QueryKey,
   options?: TopicQueryOptions<unknown>,
 ): void {
-  const client = usePushmount()
+  const client = useAghoz()
   const queryClient = useQueryClient()
   const { enabled, exact, debounceMs } = useResolved(options)
 
@@ -168,7 +168,7 @@ export function useTopicQueryData<TData, TEvent = unknown>(
   updater: (current: TData | undefined, event: TEvent, meta: EventMeta) => TData | undefined,
   options?: TopicQueryOptions<TEvent>,
 ): void {
-  const client = usePushmount()
+  const client = useAghoz()
   const queryClient = useQueryClient()
   const { parse, enabled, exact, debounceMs } = useResolved(options)
 

@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
-  PushmountProvider,
+  AghozProvider,
   useTopic,
   useTopicReducer,
   useConnectionState,
-} from '@pushmount/react'
+} from '@aghoz/react'
 
 const orgId = new URLSearchParams(location.search).get('org') ?? '42'
 
@@ -79,7 +79,7 @@ function App({ boot }) {
   const [gap, setGap] = useState(null)
 
   return (
-    <PushmountProvider
+    <AghozProvider
       url="/events"
       // Closes the window between this page's data being read and the stream opening.
       // Without it, an order placed during that gap is lost with nothing reported.
@@ -113,7 +113,7 @@ function App({ boot }) {
         <a href={`/?org=${orgId === '42' ? '99' : '42'}`}>another org</a> to see that a
         publish only reaches subscribers authorized for it.
       </footer>
-    </PushmountProvider>
+    </AghozProvider>
   )
 }
 

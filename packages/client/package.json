@@ -1,7 +1,7 @@
 {
-  "name": "@pushmount/client",
+  "name": "@aghoz/client",
   "version": "0.1.0-rc.0",
-  "description": "Framework-agnostic browser client for the pushmount SSE protocol. Built on fetch and ReadableStream so missed updates are detected, not silently lost. Zero dependencies.",
+  "description": "Framework-agnostic browser client for the aghoz SSE protocol. Built on fetch and ReadableStream so missed updates are detected, not silently lost. Zero dependencies.",
   "keywords": [
     "server-sent-events",
     "sse",
@@ -21,14 +21,14 @@
     "readablestream",
     "reconnect"
   ],
-  "homepage": "https://github.com/thinkgrid-labs/pushmount#readme",
+  "homepage": "https://github.com/thinkgrid-labs/aghoz#readme",
   "bugs": {
-    "url": "https://github.com/thinkgrid-labs/pushmount/issues"
+    "url": "https://github.com/thinkgrid-labs/aghoz/issues"
   },
   "author": "thinkgrid-labs",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thinkgrid-labs/pushmount.git",
+    "url": "git+https://github.com/thinkgrid-labs/aghoz.git",
     "directory": "packages/client"
   },
   "license": "MIT OR Apache-2.0",
@@ -43,7 +43,7 @@
     "test": "tsc -p tsconfig.json && node --test"
   },
   "devDependencies": {
-    "@pushmount/server": "workspace:*",
+    "@aghoz/server": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"
   }

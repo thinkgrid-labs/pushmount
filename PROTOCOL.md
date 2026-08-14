@@ -1,8 +1,8 @@
-# pushmount wire protocol
+# aghoz wire protocol
 
 **Version:** 0.1 (draft) · **Status:** normative · **Last updated:** 13 August 2026
 
-This document is the authoritative definition of the pushmount wire format. Where this
+This document is the authoritative definition of the aghoz wire format. Where this
 document and any implementation disagree, this document is correct and the implementation
 has a bug.
 
@@ -16,7 +16,7 @@ RFC 2119.
 The protocol is **two endpoints and one response header**. Everything below fits in that.
 
 **The product name never appears on the wire.** No header, event name, field name, query
-parameter or reserved token contains "pushmount". This is deliberate and permanent: it
+parameter or reserved token contains "aghoz". This is deliberate and permanent: it
 means the name remains a rename, and it means a second implementation can speak this
 protocol without adopting our branding. A conformance test asserts it.
 
@@ -149,7 +149,7 @@ the header. A client sending both with different values has a bug.
 | `403` | **Every** requested topic was denied by `authorize`. |
 | `429` | A connection limit was exceeded. MUST include `Retry-After`. |
 
-`401` is never sent by pushmount. Authentication is the host application's middleware,
+`401` is never sent by aghoz. Authentication is the host application's middleware,
 which runs first.
 
 ### 4.3 Partial denial

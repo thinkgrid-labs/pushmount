@@ -1,4 +1,4 @@
-//! Node binding for [`pushmount_core`].
+//! Node binding for [`aghoz_core`].
 //!
 //! Deliberately does **not** go through the C ABI. `napi-rs` is a Rust crate, so this
 //! can depend on the core directly — which is both faster (no pointer marshalling, no
@@ -13,7 +13,7 @@
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use pushmount_core::{
+use aghoz_core::{
     BufferVerdict, Checkpoint, EventId, Hub as CoreHub, HubConfig, OriginError, PublishError,
     SubscribeError, SubscriberId, TopicError,
 };
@@ -240,13 +240,13 @@ impl Hub {
 /// §3 — exposed so the HTTP layer can reject a topic before opening a stream.
 #[napi]
 pub fn validate_topic(topic: String) -> bool {
-    pushmount_core::validate_topic(&topic).is_ok()
+    aghoz_core::validate_topic(&topic).is_ok()
 }
 
 /// §6.0 — exposed so the HTTP layer can reject an origin before it reaches a frame.
 #[napi]
 pub fn validate_origin(origin: String) -> bool {
-    pushmount_core::validate_origin(&origin).is_ok()
+    aghoz_core::validate_origin(&origin).is_ok()
 }
 
 /// §2.1 — compares two ids, returning -1, 0 or 1.
@@ -271,7 +271,7 @@ pub fn encode_frame(
     payload: String,
     origin: Option<String>,
 ) -> Buffer {
-    pushmount_core::encode_frame(
+    aghoz_core::encode_frame(
         EventId { ms: ms as u64, seq: seq as u64 },
         &topic,
         &payload,
