@@ -7,15 +7,15 @@ implementation is a defensible position rather than a slow-motion divergence.
 ## Layout
 
 ```
-vectors.json         the corpus — 35 vectors in four groups
+vectors.json         the corpus — 50 vectors in five groups
 build-vectors.mjs    regenerates vectors.json
 runner.mjs           runs the corpus against any JavaScript implementation
 ```
 
-The Rust side reads the same `vectors.json` from
-`spikes/wasm-vs-ts/core-rs/tests/conformance.rs`. **A vector added here is enforced on
-both implementations automatically.** That property is the whole point; do not fork the
-corpus.
+The Rust side reads the same `vectors.json` from `core/tests/conformance.rs`, and the
+same file runs against the Rust core through its Node binding via
+`bindings/node/conformance-adapter.mjs`. **A vector added here is enforced on every
+implementation automatically.** That property is the whole point; do not fork the corpus.
 
 ## Running it
 
@@ -30,8 +30,9 @@ The runner exits non-zero and prints expected-vs-actual for every divergence.
 
 | group | count | covers |
 |---|---|---|
-| `encode` | 12 | §6.1 frame encoding and payload segmentation |
+| `encode` | 16 | §6.1 frame encoding, payload segmentation, §6.0 origin emission |
 | `topic` | 16 | §3 topic validation |
+| `origin` | 11 | §6.0 origin validation |
 | `idOrder` | 4 | §2.1 id comparison |
 | `monotonic` | 3 | §2.2 clock-regression handling |
 
@@ -58,6 +59,9 @@ whose failure message does not tell you what is wrong is worth very little at 3a
   reaching `publish` can forge events for every subscriber.
 - **T7** — a topic named `~gap` must be rejected, or a publisher can forge data-loss
   notifications.
+- **O6** — an origin containing LF must be rejected. Same attack as E2 and T7 through the
+  §6.0 field, and the most exposed of the three: an origin is supplied by whichever client
+  issued the write.
 - **T15** — the byte/character distinction described above.
 - **O1** — `1755083412345-7` sorts before `1755083412345-10`. A string comparison gets
   this backwards, and the failure mode is a client silently discarding live events as

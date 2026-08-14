@@ -56,6 +56,13 @@ with a Python or Go binding built against it, that would have been a second brea
 second version. Deciding the name before the first binding ships was worth more than
 deciding it well.
 
+### The organisation is claimed
+
+`@aghoz` was created on npm on 15 August 2026, which closes the question D0 and D0-history
+both left open — the unscoped name had been confirmed free, but npmjs.com returns 403 on
+unauthenticated organisation lookups, so the *scope* could never be verified from outside.
+It was the last blocker on publishing anything at all, whatever the name turned out to be.
+
 ### Known weakness, accepted
 
 `aghoz` cannot be spelled from hearing it: "gh" in English is /g/ in *ghost*, /f/ in

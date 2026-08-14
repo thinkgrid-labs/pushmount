@@ -50,13 +50,13 @@ protocol core behind a C ABI for other languages.
 > **The API will change without notice**, and so may the wire protocol until it is
 > tagged. There is no deprecation policy yet because there is nothing to deprecate.
 >
-> **Even the name is provisional.** `aghoz` is a working title held deliberately —
-> see [DECISIONS.md](./DECISIONS.md) D0. The protocol carries the name nowhere, so a
-> rename stays a find-and-replace, and a test enforces that.
+> **The name is settled.** `aghoz` is final — see [DECISIONS.md](./DECISIONS.md) D4. It
+> was held provisionally until there was something to decide it on, which is why the
+> protocol carries the name nowhere and a test still enforces that.
 >
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
-> by a shared [conformance corpus](./conformance/) of 35 vectors that every
-> implementation runs; the packages pass 118 tests plus 26 in Rust (7 of the 118 are
+> by a shared [conformance corpus](./conformance/) of 50 vectors that every
+> implementation runs; the packages pass 149 tests plus 32 in Rust (11 of the 149 are
 > backplane tests that skip themselves without a live Redis — CI provides one); and the
 > [example app](./examples/express-react) runs end to end, verified in CI. Every
 > significant decision — including the two that were reversed — is recorded with its
@@ -358,6 +358,7 @@ buys an ordering that is identical in every process.
 | `@aghoz/server` | The in-process hub and the HTTP handler for Express and Node. Zero dependencies. |
 | `@aghoz/client` | Framework-agnostic browser client. Zero dependencies. |
 | `@aghoz/react` | React provider and hooks (`useTopic`, `useTopicReducer`). React 18+ peer only. |
+| `@aghoz/react-query` | TanStack Query adapter: topics mapped onto query keys, gaps included. Optional. |
 | `@aghoz/fastify` | Fastify adapter. Optional. |
 | `@aghoz/redis` | Redis Streams backplane, for multi-process deployments. Optional. |
 
@@ -501,17 +502,20 @@ core with a C ABI and a Node binding, not shipped.
 
 ### v0.2 — reach and ergonomics
 
-- **TanStack Query adapter.** Probably the highest-value item left: it maps topics onto
+- ~~**TanStack Query adapter.**~~ **Shipped** as `@aghoz/react-query`: topics map onto
   query keys so both updates and gaps flow into `invalidateQueries`, which makes adoption
   a two-line change for the largest existing audience.
 - **Nest adapter.** Note that Nest's own `@Sse()` decorator cannot be used — it writes
   the response itself, so the checkpoint header is unreachable and gap detection becomes
   impossible. Same reason the client avoids `EventSource`.
 - Vue and Svelte clients — thin wrappers over `@aghoz/client`.
-- `originId` echoed on frames, so the tab that issued a write can skip its own event
-  instead of applying it twice (once from the HTTP response, once from the stream).
-- A `revalidate` interval, so a long-lived stream re-checks authorization rather than
-  inheriting it once at connect and outliving the session that permitted it.
+- ~~`originId` echoed on frames~~ — **shipped** as the `origin` field (PROTOCOL.md §6.0),
+  so the tab that issued a write skips its own event instead of applying it twice, once
+  from the HTTP response and once from the stream.
+- ~~A `revalidate` interval~~ — **shipped** as `handler({ revalidateMs })` with
+  `client.reconnect()` alongside it (PROTOCOL.md §4.6), so a long-lived stream re-checks
+  authorization rather than inheriting it once at connect and outliving the session that
+  permitted it.
 - Observability: connection count, publish rate, lagged-subscriber count.
 
 ### v0.3 — more than one runtime

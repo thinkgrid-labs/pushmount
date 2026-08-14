@@ -122,6 +122,23 @@ async function openStream(base, query) {
   }
 }
 
+/**
+ * Waits until a node's reader has consumed everything up to `id`.
+ *
+ * Every event reaches a process through the XREAD loop, so a stream opened before that
+ * loop has caught up can receive an event live *and* in its replay. The client dedupes
+ * that by id (§9.2) and it is harmless in production, but a test counting raw frames has
+ * to order the two or it is asserting on scheduling.
+ */
+async function settled(n, id, ms = 4000) {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (n.hub.cursor() === id) return
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  throw new Error(`reader never reached ${id}; stopped at ${n.hub.cursor()}`)
+}
+
 const key = (suffix) => `${KEY}:${suffix}`
 
 /** §2.1 — compare by parsed halves, never as strings. */
@@ -295,7 +312,9 @@ test('a cursor further behind than maxReplay is a gap, not an unbounded read', o
   const a = await node(key('cap'), {}, { maxReplay: 3 })
   try {
     const first = await a.hub.publish('t', 0)
-    for (let i = 1; i <= 6; i++) await a.hub.publish('t', i)
+    let last
+    for (let i = 1; i <= 6; i++) last = await a.hub.publish('t', i)
+    await settled(a, last.id)
 
     const sub = await openStream(a.base, `topics=t&last_event_id=${encodeURIComponent(first.id)}`)
 
@@ -320,7 +339,9 @@ test('a cursor within maxReplay still replays in full', options(), async () => {
   const a = await node(key('cap-ok'), {}, { maxReplay: 3 })
   try {
     const first = await a.hub.publish('t', 0)
-    for (let i = 1; i <= 3; i++) await a.hub.publish('t', i)
+    let last
+    for (let i = 1; i <= 3; i++) last = await a.hub.publish('t', i)
+    await settled(a, last.id)
 
     const sub = await openStream(a.base, `topics=t&last_event_id=${encodeURIComponent(first.id)}`)
     assert.equal(sub.res.headers.get('last-event-id-checkpoint'), first.id)
