@@ -1,6 +1,36 @@
 {
   "name": "@pushmount/fastify",
   "version": "0.1.0-rc.0",
+  "description": "Fastify adapter for pushmount — real-time server push over Server-Sent Events (SSE), mounted as a route inside your existing Fastify app.",
+  "keywords": [
+    "server-sent-events",
+    "sse",
+    "realtime",
+    "real-time",
+    "push",
+    "server-push",
+    "live-updates",
+    "streaming",
+    "pubsub",
+    "websocket-alternative",
+    "eventsource",
+    "typescript",
+    "fastify",
+    "fastify-plugin",
+    "nodejs",
+    "adapter"
+  ],
+  "homepage": "https://github.com/thinkgrid-labs/pushmount#readme",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/pushmount/issues"
+  },
+  "author": "thinkgrid-labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thinkgrid-labs/pushmount.git",
+    "directory": "packages/fastify"
+  },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,7 +50,6 @@
     "fastify": "^5.11.3",
     "typescript": "^5.9.3"
   },
-  "license": "MIT OR Apache-2.0",
   "engines": {
     "node": ">=22"
   }

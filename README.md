@@ -1,7 +1,20 @@
-# pushmount
+<h1 align="center">pushmount</h1>
 
-Server push for apps that already have a backend. It mounts into your Express app as a
-route, so your authentication runs before it and per-user filtering is one line.
+<p align="center">
+  <strong>Real-time server push for apps that already have a backend.</strong><br>
+  Server-Sent Events (SSE) that mount into your existing app as a route — so your own
+  authentication runs first, and per-user authorization is one line.<br>
+  <sub>Node.js today (Express, Fastify, React). The protocol core is Rust behind a C ABI,
+  so other languages follow.</sub>
+</p>
+
+<p align="center">
+  <a href="https://github.com/thinkgrid-labs/pushmount/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/thinkgrid-labs/pushmount/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="#license"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg"></a>
+  <img alt="Node.js 22 or later" src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg">
+  <img alt="Zero third-party dependencies" src="https://img.shields.io/badge/third--party%20deps-0-brightgreen.svg">
+  <img alt="Status: pre-release, unpublished" src="https://img.shields.io/badge/status-pre--release-orange.svg">
+</p>
 
 ```js
 app.get('/events', hub.handler({
@@ -10,6 +23,17 @@ app.get('/events', hub.handler({
 ```
 
 No second service. No token exchange. No CORS.
+
+**pushmount** is a small, dependency-free real-time push library. It ships today for
+**Node.js** — **Express**, **Fastify** and **React** — and the protocol is specified and
+conformance-tested independently of any one runtime, so further languages are a binding
+rather than a rewrite. It replaces polling (`refetchInterval`,
+`setInterval` + `fetch`) with live server-to-client updates over **Server-Sent Events**,
+without the second service that **Mercure** or **Centrifugo** require and without the
+client-side database that a sync engine like **ElectricSQL** or **PowerSync** brings.
+Missed updates are reported as an error rather than silently lost. Scale past one process
+with an optional **Redis Streams** backplane. Written in **TypeScript**, with a **Rust**
+protocol core behind a C ABI for other languages.
 
 ---
 
@@ -27,13 +51,34 @@ No second service. No token exchange. No CORS.
 > rename stays a find-and-replace, and a test enforces that.
 >
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
-> by a shared [conformance corpus](./conformance/) that every implementation runs; the
-> packages pass 118 tests plus 26 in Rust; and the
+> by a shared [conformance corpus](./conformance/) of 35 vectors that every
+> implementation runs; the packages pass 118 tests plus 26 in Rust (7 of the 118 are
+> backplane tests that skip themselves without a live Redis — CI provides one); and the
 > [example app](./examples/express-react) runs end to end, verified in CI. Every
 > significant decision — including the two that were reversed — is recorded with its
 > evidence in [DECISIONS.md](./DECISIONS.md).
 >
 > Please don't build a business on it yet. Do open an issue if you try it.
+
+---
+
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [How pushmount compares](#how-pushmount-compares)
+- [Read this before installing](#read-this-before-installing)
+- [What makes it different](#what-makes-it-different)
+- [Quickstart](#quickstart) — [server](#server--three-additions-to-an-app-you-already-have) · [client](#client) · [collections](#collections-need-a-fold-not-a-cell)
+- [Things that will bite you](#things-that-will-bite-you)
+- [Multiple processes (Redis backplane)](#multiple-processes-redis-backplane)
+- [Packages](#packages)
+- [Why Rust?](#why-rust)
+- [FAQ](#faq)
+- [Roadmap](#roadmap)
+- [Example app](#example-app)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
@@ -79,6 +124,26 @@ app you already have, small enough to read in one sitting.
 
 ---
 
+## How pushmount compares
+
+|  | pushmount | Mercure / Centrifugo | Socket.IO | ElectricSQL / PowerSync / Zero | Hand-rolled SSE |
+|---|---|---|---|---|---|
+| **Extra service to run** | no — a route in your app | yes | no | yes (sync service) | no |
+| **Authorization** | your existing middleware, one function | JWTs scoped to topics, minted by you | your own handshake code | row/shape rules in the sync layer | yours to write |
+| **Missed updates** | detected and reported (`onGap`) | reconnect replay, loss not surfaced | at-most-once by default | reconciled by the sync engine | silent |
+| **Transport** | SSE over plain HTTP | SSE / WebSocket | WebSocket + fallbacks | WebSocket | SSE |
+| **Direction** | server → client only | server → client | bidirectional | bidirectional sync | server → client |
+| **Client-side database** | none | none | none | yes | none |
+| **Offline / local writes** | no | no | no | yes | no |
+| **Multi-process** | optional Redis Streams backplane | built in | Redis adapter | built in | yours to write |
+| **Dependencies** | zero | a service + a client | several | a service + a client | zero |
+
+Read that table as scope, not scoring. If you need bidirectional messaging, use
+Socket.IO. If you need offline-first local writes, use a sync engine. pushmount is for
+the case where the server already knows something and the browser should stop asking.
+
+---
+
 ## Read this before installing
 
 **It will not work on serverless.** Vercel, Lambda and Cloudflare Workers cannot hold a
@@ -88,8 +153,8 @@ deployment target, stop here.
 **Across multiple processes you need a backplane.** By default a `publish` reaches only
 that process's subscribers, and pushmount warns at startup when it can tell it is one
 worker of several. Add `@pushmount/redis` and the limitation goes away — see
-[Multiple processes](#multiple-processes). Redis is entirely optional; without it there
-are no dependencies at all.
+[Multiple processes](#multiple-processes-redis-backplane). Redis is entirely optional;
+without it there are no dependencies at all.
 
 **It is not a sync engine.** No offline support, no local writes, no CRDT conflict
 resolution, no client-side database. If you need those, see the paragraph above — you
@@ -248,7 +313,7 @@ render pass are debounced into one connection; churning topics on every render i
 
 ---
 
-## Multiple processes
+## Multiple processes (Redis backplane)
 
 Skip this if you run one process. Nothing below is needed, and nothing above changes.
 
@@ -286,13 +351,14 @@ buys an ordering that is identical in every process.
 
 | package | what it is |
 |---|---|
-| `@pushmount/server` | The in-process hub and the HTTP handler. Zero dependencies. |
+| `@pushmount/server` | The in-process hub and the HTTP handler for Express and Node. Zero dependencies. |
 | `@pushmount/client` | Framework-agnostic browser client. Zero dependencies. |
-| `@pushmount/react` | Provider and hooks. React 18+ peer only. |
+| `@pushmount/react` | React provider and hooks (`useTopic`, `useTopicReducer`). React 18+ peer only. |
 | `@pushmount/fastify` | Fastify adapter. Optional. |
-| `@pushmount/redis` | Redis Streams backplane, for multi-process. Optional. |
+| `@pushmount/redis` | Redis Streams backplane, for multi-process deployments. Optional. |
 
-There is also a Rust protocol core (`core/`) with a C ABI (`abi/`) — see below.
+There is also a Rust protocol core (`core/`) with a C ABI (`abi/`) — see
+[Why Rust?](#why-rust).
 
 ### Why the client is not built on EventSource
 
@@ -347,6 +413,75 @@ trusting review. And each language binding is its own build.
 no `.node` file and no toolchain, and the definition of done here is "install and go".
 The Rust core exists, passes the same corpus, and has been proven complete by running the
 entire Node test suite against it — so it is ready for the day a second language arrives.
+
+---
+
+## FAQ
+
+### Is pushmount a WebSocket library?
+
+No. It uses Server-Sent Events over ordinary HTTP, one direction only: server to client.
+Writes keep going through the REST or RPC API you already have. If you need the browser
+to *send* messages over the same socket, you want WebSockets and probably Socket.IO.
+
+### SSE or WebSockets — which should I use?
+
+If the browser only needs to receive, SSE is the smaller answer: it is plain HTTP, so
+your cookies, proxies, load balancers, compression and observability all keep working,
+and reconnection with resume is part of the standard rather than something you build.
+WebSockets earn their complexity when the client also needs to push, or when you need
+binary frames. Most "real-time dashboard" features are receive-only and reach for
+WebSockets out of habit.
+
+### Does it work on Vercel, Netlify, AWS Lambda or Cloudflare Workers?
+
+No, and it never will. Those runtimes cannot hold an open connection for the lifetime of
+a page. You need a long-lived Node process — a container, a VM, Fly, Render, Railway,
+Heroku, your own box. See [Read this before installing](#read-this-before-installing).
+
+### Do I need Redis?
+
+Only if you run more than one process. A single Node process needs nothing at all — zero
+dependencies. Under pm2 cluster mode, Kubernetes replicas, or any horizontal scaling, add
+`@pushmount/redis`. pushmount warns at startup when it can detect that it is one worker
+of several.
+
+### How is this different from Mercure or Centrifugo?
+
+Those are standalone hubs: a separate service that has never seen your user table, so
+authorization has to be rebuilt as a token subsystem — minting, scoping, expiry,
+rotation, revocation. pushmount is a route inside your app, mounted after your existing
+auth middleware, so authorization is a function of the request you already parsed. The
+tradeoff is real: a standalone hub scales independently of your app, and pushmount
+deliberately does not, until the standalone binary lands. See
+[How pushmount compares](#how-pushmount-compares).
+
+### How do I replace `refetchInterval` polling in React Query?
+
+Keep React Query for fetching and cache management; delete the interval and let the
+stream invalidate. Wire `onGap` to `queryClient.invalidateQueries()` so a detected gap
+refetches instead of leaving stale data on screen. A first-class TanStack Query adapter
+that maps topics onto query keys is the top item on the [roadmap](#v02--reach-and-ergonomics).
+
+### What happens if a client misses events while disconnected?
+
+It reconnects with its cursor, and the server replays from history. If the cursor is
+older than retained history, or the client was dropped as a slow consumer, that is a
+*gap* — reported through `onGap` rather than papered over. This is the whole reason the
+project exists; silent staleness is the failure mode hand-rolled SSE hides.
+
+### Does it work with Next.js?
+
+The React client does. The server does not run on Next.js route handlers deployed to a
+serverless target, for the reason above. A self-hosted Next.js server (`next start` in a
+container) can host the hub in a custom server, or you can keep the hub in the Express
+API you already have and point the client at it.
+
+### Is it production ready?
+
+Not yet — see the notice at the top. The protocol is specified and conformance-tested,
+the packages pass their suites in CI, and the example app runs end to end, but nothing is
+published and the API can change without notice.
 
 ---
 
@@ -413,7 +548,7 @@ Things worth thinking about that may never happen.
 
 ---
 
-## Example
+## Example app
 
 ```
 cd examples/express-react
@@ -424,6 +559,18 @@ A real Express + React app: live revenue, a live order list, a connection indica
 a gap banner. It runs `compression()` deliberately, because that is the middleware which
 silently buffers hand-rolled SSE. Open it twice, or as `?org=99`, to watch a publish
 reach only the subscribers authorized for it.
+
+---
+
+## Documentation
+
+- [PROTOCOL.md](./PROTOCOL.md) — the normative wire format: framing, ids, topics,
+  cursors, control frames, the checkpoint header.
+- [DECISIONS.md](./DECISIONS.md) — every significant decision with its evidence,
+  including the two that were reversed by measurement.
+- [conformance/](./conformance/) — the language-neutral vector corpus both the
+  TypeScript and Rust implementations run.
+- [examples/express-react](./examples/express-react) — the end-to-end example app.
 
 ---
 
@@ -452,3 +599,9 @@ neither adopter has to argue with anyone.
 
 Unless you state otherwise, any contribution you intentionally submit for inclusion in
 this work shall be dual-licensed as above, with no additional terms or conditions.
+
+---
+
+<sub>Keywords: server-sent events, SSE, real-time, live updates, server push, Node.js,
+Express, Fastify, React hooks, TypeScript, WebSocket alternative, replace polling,
+pub/sub, Redis Streams, Mercure alternative, Centrifugo alternative, Rust.</sub>

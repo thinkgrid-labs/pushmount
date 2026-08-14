@@ -1,6 +1,38 @@
 {
   "name": "@pushmount/redis",
   "version": "0.1.0-rc.0",
+  "description": "Redis Streams backplane for pushmount — makes real-time SSE push reach subscribers across every process, pod or cluster worker, with Redis as the id sequencer.",
+  "keywords": [
+    "server-sent-events",
+    "sse",
+    "realtime",
+    "real-time",
+    "push",
+    "server-push",
+    "live-updates",
+    "streaming",
+    "pubsub",
+    "websocket-alternative",
+    "eventsource",
+    "typescript",
+    "redis",
+    "redis-streams",
+    "ioredis",
+    "backplane",
+    "cluster",
+    "horizontal-scaling"
+  ],
+  "homepage": "https://github.com/thinkgrid-labs/pushmount#readme",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/pushmount/issues"
+  },
+  "author": "thinkgrid-labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thinkgrid-labs/pushmount.git",
+    "directory": "packages/redis"
+  },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,7 +51,6 @@
     "ioredis": "^5.11.1",
     "typescript": "^5.9.3"
   },
-  "license": "MIT OR Apache-2.0",
   "engines": {
     "node": ">=22"
   }

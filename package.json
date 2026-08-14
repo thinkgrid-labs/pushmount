@@ -1,6 +1,37 @@
 {
   "name": "pushmount-workspace",
   "private": true,
+  "description": "pushmount — real-time server push over Server-Sent Events (SSE) that mounts into the app you already have. Monorepo: TypeScript packages, Rust protocol core, conformance corpus.",
+  "keywords": [
+    "server-sent-events",
+    "sse",
+    "realtime",
+    "real-time",
+    "push",
+    "server-push",
+    "live-updates",
+    "streaming",
+    "pubsub",
+    "websocket-alternative",
+    "eventsource",
+    "typescript",
+    "express",
+    "fastify",
+    "react",
+    "rust",
+    "redis-streams",
+    "monorepo"
+  ],
+  "homepage": "https://github.com/thinkgrid-labs/pushmount#readme",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/pushmount/issues"
+  },
+  "author": "thinkgrid-labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thinkgrid-labs/pushmount.git"
+  },
+  "license": "MIT OR Apache-2.0",
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test && node scripts/check-invariants.mjs && node scripts/smoke-example.mjs",
@@ -8,6 +39,5 @@
     "invariants": "node scripts/check-invariants.mjs",
     "smoke": "node scripts/smoke-example.mjs",
     "version:set": "node scripts/set-version.mjs"
-  },
-  "license": "MIT OR Apache-2.0"
+  }
 }

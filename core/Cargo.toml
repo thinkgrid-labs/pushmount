@@ -4,6 +4,12 @@ description = "Protocol core for pushmount: ids, topics, SSE framing, history an
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
 
 [lib]
 crate-type = ["rlib"]

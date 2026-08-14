@@ -1,6 +1,38 @@
 {
   "name": "@pushmount/server",
   "version": "0.1.0-rc.0",
+  "description": "In-process real-time server push over Server-Sent Events (SSE) for Node.js and Express — mounts as a route so your existing auth runs first. Gap detection, zero dependencies.",
+  "keywords": [
+    "server-sent-events",
+    "sse",
+    "realtime",
+    "real-time",
+    "push",
+    "server-push",
+    "live-updates",
+    "streaming",
+    "pubsub",
+    "websocket-alternative",
+    "eventsource",
+    "typescript",
+    "express",
+    "nodejs",
+    "node",
+    "hub",
+    "authorization",
+    "polling"
+  ],
+  "homepage": "https://github.com/thinkgrid-labs/pushmount#readme",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/pushmount/issues"
+  },
+  "author": "thinkgrid-labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thinkgrid-labs/pushmount.git",
+    "directory": "packages/server"
+  },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,7 +49,6 @@
     "express": "^5.2.1",
     "typescript": "^5.6.0"
   },
-  "license": "MIT OR Apache-2.0",
   "engines": {
     "node": ">=22"
   }

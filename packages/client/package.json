@@ -1,6 +1,37 @@
 {
   "name": "@pushmount/client",
   "version": "0.1.0-rc.0",
+  "description": "Framework-agnostic browser client for the pushmount SSE protocol. Built on fetch and ReadableStream so missed updates are detected, not silently lost. Zero dependencies.",
+  "keywords": [
+    "server-sent-events",
+    "sse",
+    "realtime",
+    "real-time",
+    "push",
+    "server-push",
+    "live-updates",
+    "streaming",
+    "pubsub",
+    "websocket-alternative",
+    "eventsource",
+    "typescript",
+    "browser",
+    "client",
+    "fetch",
+    "readablestream",
+    "reconnect"
+  ],
+  "homepage": "https://github.com/thinkgrid-labs/pushmount#readme",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/pushmount/issues"
+  },
+  "author": "thinkgrid-labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thinkgrid-labs/pushmount.git",
+    "directory": "packages/client"
+  },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,6 +46,5 @@
     "@pushmount/server": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"
-  },
-  "license": "MIT OR Apache-2.0"
+  }
 }

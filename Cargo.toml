@@ -6,3 +6,9 @@ resolver = "2"
 version = "0.1.0-rc.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/thinkgrid-labs/pushmount"
+homepage = "https://github.com/thinkgrid-labs/pushmount#readme"
+authors = ["thinkgrid-labs"]
+# crates.io ranks on these; five keywords is the registry's hard cap.
+keywords = ["sse", "server-sent-events", "realtime", "push", "streaming"]
+categories = ["network-programming", "web-programming", "asynchronous"]

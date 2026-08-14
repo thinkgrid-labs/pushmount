@@ -4,6 +4,12 @@ description = "Node.js binding for pushmount-core."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [lib]
 crate-type = ["cdylib"]

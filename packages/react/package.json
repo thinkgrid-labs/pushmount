@@ -1,6 +1,38 @@
 {
   "name": "@pushmount/react",
   "version": "0.1.0-rc.0",
+  "description": "React hooks for real-time server push over SSE — useTopic, useTopicReducer and a provider that reports missed updates. Replaces refetchInterval polling.",
+  "keywords": [
+    "server-sent-events",
+    "sse",
+    "realtime",
+    "real-time",
+    "push",
+    "server-push",
+    "live-updates",
+    "streaming",
+    "pubsub",
+    "websocket-alternative",
+    "eventsource",
+    "typescript",
+    "react",
+    "react-hooks",
+    "hooks",
+    "usetopic",
+    "tanstack-query",
+    "polling"
+  ],
+  "homepage": "https://github.com/thinkgrid-labs/pushmount#readme",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/pushmount/issues"
+  },
+  "author": "thinkgrid-labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thinkgrid-labs/pushmount.git",
+    "directory": "packages/react"
+  },
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -27,6 +59,5 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "typescript": "^5.9.3"
-  },
-  "license": "MIT OR Apache-2.0"
+  }
 }
