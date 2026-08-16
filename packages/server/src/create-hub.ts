@@ -231,7 +231,7 @@ export function createHub(options: CreateHubOptions = {}) {
     message: string,
     extra: Record<string, string> = {},
   ): void {
-    counters.rejected[rejectReasonFor(status)]++
+    counters.rejected[rejectReasonFor(status, message)]++
     fail(res, status, message, extra)
   }
 
@@ -756,7 +756,23 @@ export function createHub(options: CreateHubOptions = {}) {
 
         // §4.1 — the header wins when both are present.
         const headerCursor = header(req, 'last-event-id')
-        const rawCursor = headerCursor ?? decodeOrNull(rawParam(search, 'last_event_id'))
+        let rawCursor = headerCursor
+        if (rawCursor === null) {
+          const encoded = rawParam(search, 'last_event_id')
+          if (encoded !== null) {
+            try {
+              rawCursor = decodeURIComponent(encoded)
+            } catch {
+              // §4.2 — a cursor that cannot be decoded cannot satisfy §2, so it is a 400,
+              // exactly as `topics` above is. Reading it as "no cursor" would be the
+              // silent downgrade the subscribe below refuses to make: the response would
+              // carry no checkpoint, the client would have no way to learn its cursor was
+              // discarded, and everything published since it would be gone unreported.
+              // A cursor is the one parameter where being lenient loses data.
+              return reject(res, 400, 'last_event_id contains malformed percent-encoding')
+            }
+          }
+        }
         const cursor = rawCursor === null || rawCursor === '' ? undefined : rawCursor
 
         // ---- §4.3 authorize ---------------------------------------------------
@@ -790,9 +806,19 @@ export function createHub(options: CreateHubOptions = {}) {
         try {
           subscribed = core.subscribe(allowed, key, cursor)
         } catch (error) {
-          const reason = error instanceof CoreError ? error.reason : 'invalid-topic'
+          // Only the core's own rejections describe the *request*. Anything else — a
+          // native binding that failed for a reason of its own, a bug in here — is this
+          // server failing, and answering 400 for it tells the caller its request was
+          // malformed while hiding a fault that is entirely ours. It also has to reach
+          // `onError`: an operator cannot fix what nothing reports.
+          if (!(error instanceof CoreError)) {
+            counters.errors.core++
+            onError(error)
+            return reject(res, 500, 'core-error')
+          }
           // A malformed cursor is a 400, never a silent downgrade to "no cursor": the
           // client would believe it resumed and would never be told otherwise.
+          const reason = error.reason
           const status =
             reason === 'max-connections' || reason === 'max-connections-per-key' ? 429 : 400
           return reject(res, status, reason, status === 429 ? { 'retry-after': '5' } : {})
@@ -937,15 +963,6 @@ function rawParam(search: string, name: string): string | null {
   return null
 }
 
-function decodeOrNull(raw: string | null): string | null {
-  if (raw === null) return null
-  try {
-    return decodeURIComponent(raw)
-  } catch {
-    return null
-  }
-}
-
 function header(req: IncomingMessage, name: string): string | null {
   const v = req.headers[name]
   if (v === undefined) return null
@@ -959,14 +976,17 @@ function header(req: IncomingMessage, name: string): string | null {
  * as something instead of throwing or silently vanishing from the totals — a metric that
  * under-reports is the one failure mode worth engineering against here.
  */
-function rejectReasonFor(status: number): RejectReason {
+function rejectReasonFor(status: number, message: string): RejectReason {
   switch (status) {
     case 403:
       return 'unauthorized'
     case 429:
       return 'over-capacity'
     case 500:
-      return 'authorize-error'
+      // Two different 500s, and they are not the same operational problem: one is the
+      // host application's `authorize` throwing, the other is the protocol core failing
+      // underneath it. Counting them together would hide whichever is rarer.
+      return message === 'core-error' ? 'core-error' : 'authorize-error'
     case 503:
       return 'unavailable'
     default:

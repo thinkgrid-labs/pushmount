@@ -124,6 +124,27 @@
       ]
     },
     {
+      "id": "H42",
+      "ref": "§4.1",
+      "desc": "a cursor with malformed percent-encoding is a 400, not a decode failure quietly read as \"no cursor\"",
+      "steps": [
+        {
+          "op": "request",
+          "path": "/events?topics=t&last_event_id=%ZZ",
+          "expect": {
+            "status": 400
+          }
+        },
+        {
+          "op": "request",
+          "path": "/events?topics=t&last_event_id=%E0%A4%A",
+          "expect": {
+            "status": 400
+          }
+        }
+      ]
+    },
+    {
       "id": "H8",
       "ref": "§2.1",
       "desc": "a non-canonical cursor is refused — leading zeros would resolve to a different event elsewhere",

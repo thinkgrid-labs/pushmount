@@ -112,9 +112,19 @@ test('a fresh hub reports zeroes, and every bucket exists', async () => {
     assert.deepEqual(Object.keys(stats.rejected).sort(), [
       'authorize-error',
       'bad-request',
+      // A 500 from the core is kept apart from a 500 out of `authorize`: different
+      // faults, different owners, and folding them together hides whichever is rarer.
+      'core-error',
       'over-capacity',
       'unauthorized',
       'unavailable',
+    ])
+    assert.deepEqual(Object.keys(stats.errors).sort(), [
+      'authorize',
+      'backplane',
+      'core',
+      'history',
+      'publish',
     ])
 
     for (const n of [

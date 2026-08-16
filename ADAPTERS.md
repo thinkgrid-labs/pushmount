@@ -130,6 +130,11 @@ catches it.
   query parameter. The header wins. → `H23`
 - **A malformed cursor is a 400, never a silent downgrade to "no cursor".** A client that
   believes it resumed and did not has lost data with nothing reporting it. → `H7`, `H8`, `H9`
+- **That includes a cursor whose percent-encoding will not decode.** The same rule one step
+  earlier, and the easier one to miss: a `topics` decode that fails leaves nothing to
+  subscribe to and fails on its own, while a cursor decode that fails leaves a request that
+  still works — so a decode-or-null helper shared between the two turns a bad cursor into
+  no cursor and opens a live-only stream. → `H42`
 - Ignore unknown query parameters — §11. → `H10`
 
 ### 2. Authorize — §4.3
@@ -266,7 +271,7 @@ Read `vectors.json` directly from your language. Every group is a pure function 
 core, so if you bound to the ABI correctly you get these for free; if you reimplemented
 something, this is where it shows.
 
-**2. The HTTP suite** — [`conformance/http/`](./conformance/http/), 41 scenarios over a
+**2. The HTTP suite** — [`conformance/http/`](./conformance/http/), 42 scenarios over a
 real socket. Ship the small test app described in that README and run the harness against
 it. This is the one that judges *your* code.
 

@@ -56,28 +56,42 @@ pub struct JsSubscribe {
     pub replay: Vec<Buffer>,
 }
 
+/// The seam's reason for a topic rejection, with the detail after it.
+///
+/// Every message this binding produces for a rejection begins with one of the tokens in
+/// `core-native.ts`'s `REASONS`, followed by `: ` and something a human can read. That
+/// prefix is the contract, and it exists because napi gives a thrown error exactly two
+/// string channels: `code`, which napi fills with its own coarse status (`InvalidArg` for
+/// a rejection here and for its own argument-conversion failures alike), and the message.
+/// So the reason has to travel in the message — but as a token to look up, never as prose
+/// to search. The half above matched substrings and called anything unrecognised an
+/// invalid topic, which turned every failure of the binding *itself* into a 400 blaming
+/// the caller. A token that is absent now means "not a rejection", and says so as a 500.
 fn topic_message(e: TopicError) -> String {
-    match e {
+    let detail = match e {
         TopicError::Empty => "topic is empty",
         TopicError::TooLong => "topic exceeds 255 bytes",
         TopicError::ControlCharacter => "topic contains a control character",
         TopicError::ReservedPrefix => "topic begins with the reserved '~'",
-    }
-    .to_string()
+    };
+    format!("invalid-topic: {detail}")
 }
 
-/// Maps a publish rejection onto the message `core-native.ts` matches on.
+/// Maps a publish rejection onto the token `core-native.ts` looks up — see `topic_message`.
 ///
-/// The messages are part of the binding's contract rather than incidental strings; the
+/// The tokens are part of the binding's contract rather than incidental strings; the
 /// parity tests assert them.
 fn publish_message(e: PublishError) -> String {
     match e {
         PublishError::Topic(t) => topic_message(t),
-        PublishError::Origin(o) => match o {
-            OriginError::Empty => "origin is empty".to_string(),
-            OriginError::TooLong => "origin exceeds 64 bytes".to_string(),
-            OriginError::ControlCharacter => "origin contains a control character".to_string(),
-        },
+        PublishError::Origin(o) => {
+            let detail = match o {
+                OriginError::Empty => "origin is empty",
+                OriginError::TooLong => "origin exceeds 64 bytes",
+                OriginError::ControlCharacter => "origin contains a control character",
+            };
+            format!("invalid-origin: {detail}")
+        }
     }
 }
 
@@ -150,7 +164,10 @@ impl Hub {
         origin: Option<String>,
     ) -> Result<JsPublish> {
         let Some(parsed) = EventId::parse(&id) else {
-            return Err(Error::new(Status::InvalidArg, format!("malformed id: {id}")));
+            return Err(Error::new(
+                Status::InvalidArg,
+                format!("malformed-cursor: malformed id {id}"),
+            ));
         };
         let origin = origin.filter(|o| !o.is_empty());
         match self.inner.append(parsed, &topic, &payload, origin.as_deref()) {
@@ -177,7 +194,10 @@ impl Hub {
         origin: Option<String>,
     ) -> Result<Buffer> {
         let Some(parsed) = EventId::parse(&id) else {
-            return Err(Error::new(Status::InvalidArg, format!("malformed id: {id}")));
+            return Err(Error::new(
+                Status::InvalidArg,
+                format!("malformed-cursor: malformed id {id}"),
+            ));
         };
         let origin = origin.filter(|o| !o.is_empty());
         match self.inner.encode(parsed, &topic, &payload, origin.as_deref()) {
@@ -204,7 +224,12 @@ impl Hub {
                 Some(id) => Some(id),
                 // A malformed cursor must not be treated as "no cursor": the client
                 // would believe it resumed and would never be told otherwise.
-                None => return Err(Error::new(Status::InvalidArg, "malformed cursor")),
+                None => {
+                    return Err(Error::new(
+                        Status::InvalidArg,
+                        format!("malformed-cursor: {raw}"),
+                    ))
+                }
             },
         };
 

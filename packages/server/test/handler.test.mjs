@@ -121,6 +121,27 @@ test('400 for a malformed cursor rather than silently starting live', async () =
       headers: { 'last-event-id': '01-0' },
     })
     assert.equal(res2.status, 400, 'leading zeros are not canonical')
+
+    // The same rule one step earlier, at the decode. `topics` and `last_event_id` are
+    // decoded by the same call, but a failure means different things: a `topics` decode
+    // that fails leaves nothing to subscribe to, while a cursor decode that fails leaves
+    // a request that still works — so the tempting shape, decode-or-null, quietly opens a
+    // live-only stream. The client sent a cursor, gets no checkpoint header back because
+    // the server believes there was none, and cannot tell that it was dropped.
+    const res3 = await fetch(`${s.base}/events?topics=t&last_event_id=%ZZ`)
+    assert.equal(res3.status, 400, 'malformed percent-encoding is not "no cursor"')
+
+    // Well-formed escapes spelling an incomplete UTF-8 sequence: the same throw, without
+    // the tell that a hand-rolled `%XX` check would catch.
+    const res4 = await fetch(`${s.base}/events?topics=t&last_event_id=%E0%A4%A`)
+    assert.equal(res4.status, 400, 'a truncated UTF-8 sequence is malformed too')
+
+    // And an absent cursor is still absent — the parameter left empty carries no id to
+    // lose, so it opens a live stream rather than becoming a 400.
+    const live = new AbortController()
+    const res5 = await fetch(`${s.base}/events?topics=t&last_event_id=`, { signal: live.signal })
+    assert.equal(res5.status, 200)
+    live.abort()
   } finally {
     await s.close()
   }
@@ -353,6 +374,55 @@ test('a backplane that cannot answer at boot still serves, with a cursor merely 
     const res = await fetch(`${s.base}/events/cursor`)
     assert.equal(res.status, 200)
     assert.equal(errors.length > 0, true, 'and it is reported rather than swallowed')
+  } finally {
+    await s.close()
+  }
+})
+
+// A core that fails on its own terms is not a bad request, and saying it is hides the
+// fault twice over: the caller is told to fix a request that was fine, and the operator
+// sees a rising `bad-request` count with nothing in `errors` and no `onError` call. The
+// native seam used to classify by searching the message for substrings and calling
+// anything unmatched an invalid topic, so every napi conversion failure, every panic
+// unwound through the boundary and every version-skewed addon arrived as `400
+// invalid-topic`.
+test('a core failing on its own terms is a 500, reported, not a 400 blaming the caller', async () => {
+  const errors = []
+  // A `HubCore` that works until it does not — the shape of every failure that is the
+  // server's rather than the request's.
+  const failing = {
+    publish: () => ({ id: '1-0', frame: new Uint8Array(), targets: [] }),
+    append: () => ({ id: '1-0', frame: new Uint8Array(), targets: [] }),
+    encode: () => new Uint8Array(),
+    subscribe: () => {
+      throw new Error('Failed to convert JS value into rust type `String`')
+    },
+    noteBuffer: () => 'ok',
+    noteSent: () => 'ok',
+    noteFlushed: () => 'ok',
+    remove: () => true,
+    cursor: () => '0-0',
+    connectionCount: () => 0,
+    slowConsumerFrame: () => new Uint8Array(),
+    truncatedFrame: () => new Uint8Array(),
+    deniedFrame: () => new Uint8Array(),
+    compareIds: () => 0,
+    validTopic: () => true,
+    validOrigin: () => true,
+  }
+  const s = await boot({ core: failing, onError: (e) => errors.push(e) })
+  try {
+    const res = await fetch(`${s.base}/events?topics=t`)
+    assert.equal(res.status, 500)
+    assert.deepEqual(await res.json(), { error: 'core-error' })
+
+    const stats = s.hub.stats()
+    assert.equal(stats.errors.core, 1, 'the operator has to be able to see it')
+    assert.equal(stats.rejected['core-error'], 1)
+    assert.equal(stats.rejected['bad-request'], 0, 'the caller did nothing wrong')
+    assert.equal(stats.rejected['authorize-error'], 0, 'and `authorize` was not involved')
+    assert.equal(errors.length, 1, 'onError must see what nothing else would report')
+    assert.match(errors[0].message, /convert JS value/, 'unwrapped, so the cause survives')
   } finally {
     await s.close()
   }

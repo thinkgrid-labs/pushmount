@@ -49,6 +49,15 @@ export type RejectReason =
   | 'over-capacity'
   /** 500 — `authorize` threw at connect. */
   | 'authorize-error'
+  /**
+   * 500 — the protocol core failed for a reason of its own.
+   *
+   * Kept apart from `authorize-error` because they are different faults with different
+   * owners: one is the host application's callback, the other is the core underneath it —
+   * a native binding that could not answer, or a bug in the handler. Neither is the
+   * caller's doing, which is why neither is counted as `bad-request`.
+   */
+  | 'core-error'
   /** 503 — the hub was closed, or the connection went away mid-open. */
   | 'unavailable'
 
@@ -124,6 +133,16 @@ export interface HubStats {
      * written down, so a restart will not replay it.
      */
     readonly history: number
+    /**
+     * The protocol core threw something that is not one of its rejections — a native
+     * binding failing on its own terms, or a bug here.
+     *
+     * Distinct from the rejections beside it, which describe the *request*. A non-zero
+     * count means requests are being refused for a reason no client can fix, so it is the
+     * one number in this group that says "the server is broken" rather than "something
+     * downstream is".
+     */
+    readonly core: number
   }
 }
 
@@ -139,7 +158,13 @@ export interface Counters {
   replayed: number
   denied: number
   truncated: number
-  errors: { publish: number; backplane: number; authorize: number; history: number }
+  errors: {
+    publish: number
+    backplane: number
+    authorize: number
+    history: number
+    core: number
+  }
 }
 
 export function createCounters(now: () => number): Counters {
@@ -152,6 +177,7 @@ export function createCounters(now: () => number): Counters {
       unauthorized: 0,
       'over-capacity': 0,
       'authorize-error': 0,
+      'core-error': 0,
       unavailable: 0,
     },
     published: 0,
@@ -160,7 +186,7 @@ export function createCounters(now: () => number): Counters {
     replayed: 0,
     denied: 0,
     truncated: 0,
-    errors: { publish: 0, backplane: 0, authorize: 0, history: 0 },
+    errors: { publish: 0, backplane: 0, authorize: 0, history: 0, core: 0 },
   }
 }
 

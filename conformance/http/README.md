@@ -12,7 +12,7 @@ checked it.
                      lines    pinned by
   core/               ~915    94 vectors, three runners
   abi/                ~800    Miri, 34 roundtrip tests
-  the HTTP layer      ~950    41 scenarios, over a real socket   ← this
+  the HTTP layer      ~950    42 scenarios, over a real socket   ← this
 ```
 
 An adapter can pass 94/94 vectors and still be wrong in every way that matters: omit
@@ -33,7 +33,7 @@ held to exactly this contract.
 
 ```
 layout
-  scenarios.json        the corpus — 41 scenarios in seven groups
+  scenarios.json        the corpus — 42 scenarios in seven groups
   build-scenarios.mjs   regenerates scenarios.json
   runner.mjs            the harness
   adapters/node/        the Node reference app

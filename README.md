@@ -56,8 +56,8 @@ protocol core behind a C ABI for other languages.
 >
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
 > by two shared corpora — [97 vectors](./conformance/) pinning the protocol core and
-> [41 scenarios](./conformance/http/) pinning the HTTP layer over a real socket, both
-> language-neutral. The packages pass 259 tests plus 74 in Rust, the unsafe in the C ABI
+> [42 scenarios](./conformance/http/) pinning the HTTP layer over a real socket, both
+> language-neutral. The packages pass 263 tests plus 74 in Rust, the unsafe in the C ABI
 > is verified by Miri, and the [example app](./examples/express-react) runs end to end in
 > CI. Every significant decision — including the three that were reversed — is recorded
 > with its evidence in [DECISIONS.md](./DECISIONS.md).
@@ -710,10 +710,11 @@ const {
   connections,   // open right now
   opened,        // streams opened, ever
   closed,        // { client, 'slow-consumer', revalidated, evicted, 'hub-closed' }
-  rejected,      // { 'bad-request', unauthorized, 'over-capacity', 'authorize-error', unavailable }
+  rejected,      // { 'bad-request', unauthorized, 'over-capacity', 'authorize-error', 'core-error', unavailable }
   published,     // events this process published
   delivered,     // frames written to subscribers — one publish to ten of them counts ten
   truncated,     // clients told they lost events
+  errors,        // { publish, backplane, authorize, history, core } — failures, by where
   bufferedBytes, // queued on subscriber sockets right now
   uptimeMs,
 } = hub.stats()
@@ -729,6 +730,12 @@ else describes load; these two describe loss.
 - `closed['slow-consumer']` climbing means subscribers cannot keep up with your publish
   rate and §8.2 is dropping them. `bufferedBytes` is the leading indicator: it rises
   first, and drops begin when it reaches `maxBufferBytes`.
+
+`errors.core` and `rejected['core-error']` are worth an alert too, at any value above
+zero. They mean the protocol core refused a request for a reason no client can fix — a
+native binding that could not answer, or a bug in the handler — and they are deliberately
+not counted as `bad-request`, so a broken server cannot hide inside a rising count of
+what looks like malformed traffic.
 
 Every count is monotonic since `createHub`, and `uptimeMs` comes with it, so **rates are
 yours to derive**. Nothing here computes one: any window this library picked would be the
@@ -964,7 +971,7 @@ Proving it in a second language is v0.5.
   §8.2's threshold had never been in the corpus at all; it is now a ninth group, **87 → 94
   vectors**.
 - ~~**An HTTP conformance suite.**~~ — **Shipped** as
-  [conformance/http/](./conformance/http/): **41 scenarios in seven groups**, driven over a
+  [conformance/http/](./conformance/http/): **42 scenarios in seven groups**, driven over a
   real socket against a small reference app each adapter provides. The vector corpus covers
   only pure functions of the core, which every implementation gets identically by linking
   the same Rust; an adapter could pass 94/94 and still omit a header, compute the checkpoint
@@ -1009,7 +1016,7 @@ implementation it was derived from.
   about what it dropped. That makes it the cheapest way to discover that
   [ADAPTERS.md](./ADAPTERS.md)'s checklist is wrong somewhere, and it was derived from a
   single implementation, so it is wrong somewhere. Better found here than in a stranger's
-  issue tracker. Done when the Go adapter passes 94/94 vectors and all 41 HTTP scenarios
+  issue tracker. Done when the Go adapter passes 94/94 vectors and all 42 HTTP scenarios
   with no change to either corpus.
 - **Python, on FastAPI/Starlette**, as the first officially maintained non-Node adapter.
   Worth separating from "Python support": Uvicorn holds a connection cheaply, while Flask
@@ -1025,6 +1032,19 @@ implementation it was derived from.
   `FFI::cdef` is in core — so a binding is a PHP file plus a prebuilt `.so`, with no
   extension to compile. All three are multi-worker, so the backplane is a hard prerequisite
   here as well.
+- **One non-browser client — Swift or Kotlin — before the protocol freezes.** Not for the
+  platform: because `@aghoz/client` is the only client that has ever existed, there is no
+  client-side conformance suite, and **v1.0 freezes the wire format**. Every protocol bug
+  this project has found came from contemplating a *second* implementation — the id bound
+  no IEEE-754 host could honour (D9), the backpressure signal only Node could produce
+  (D10). The subscriber side has never had that test. A subscriber is also cheap to
+  write: ~640 lines, no FFI, none of the ABI machinery above. Done when it passes a
+  client corpus that does not yet exist.
+- **A client conformance corpus**, which the item above will need. The vector corpus
+  covers a client only by accident — the `encode` vectors run in reverse, `idParse` and
+  `idOrder` apply directly — and nothing at all pins §9: dedupe by §2.1 comparison,
+  control frames not advancing the cursor, and §9.4's retry discipline, where a client
+  that retries a `400` turns one configuration mistake into a request flood.
 - **Versioning across implementations.** §11's "no version field; a breaking change takes
   a new mount path" is defensible for one implementation you control and untenable across
   adapters you do not. The corpus version bumps whenever a vector's expected value changes,
@@ -1059,6 +1079,31 @@ thing this library exists to delete is back.
   subsystem knowingly, in exchange for scaling the hub independently of the app. A sidecar
   would impose that same cost on someone whose only problem was that their language is
   awkward to bind — paying the price without getting the thing it buys.
+
+### Beyond 1.0 — the rest of the mobile clients
+
+Deliberately after the freeze rather than before it. Once one non-browser client has
+proved the protocol is implementable off the browser, the others are ecosystem work
+against a stable wire format rather than a risk to it.
+
+- **Swift, Kotlin and Dart subscribers.** All three stream an HTTP body and read response
+  headers natively — `URLSession.bytes(for:)`, OkHttp's `BufferedSource`, Dart's
+  `StreamedResponse`. Whichever of Swift or Kotlin is not built in v0.5 lands here.
+- **React Native**, which is the awkward one and worth its own line. Its built-in `fetch`
+  does not stream a response body, so the transport has to come from somewhere else —
+  `XMLHttpRequest` with `onprogress`, or a runtime whose `fetch` does stream. The useful
+  part is that `createClient` already accepts an injected `fetch`, so this is a transport
+  shim rather than a second client.
+- **A per-connection keepalive.** `keepAliveMs` is hub-wide today, so a deployment cannot
+  hold a looser interval for phones and a tighter one for browsers. On a phone the 20s
+  default wakes the radio about 180 times an hour, which is far cheaper than polling and
+  still not free.
+
+The honest architecture on mobile is a stream while the app is foregrounded and push
+notifications when it is not — the operating system suspends the process either way, and
+a held connection earns nothing while it is suspended. What the protocol contributes is
+that resuming is not guesswork: the client reconnects with its cursor and is told whether
+anything was missed.
 
 ### Ideas, not commitments
 

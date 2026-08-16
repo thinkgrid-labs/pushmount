@@ -417,6 +417,67 @@ test('the native core rejects a malformed id from a backplane', options, async (
   assert.throws(() => core.encode('1-0', 't', 'v', 'a\nid: 9-9'), /origin/)
 })
 
+// The contract between the two halves, asserted from both sides at once: the binding
+// leads every rejection with a reason token, and the seam maps exactly those and nothing
+// else. Neither half is checkable alone — the messages are just strings in Rust, and the
+// lookup table is just a map in TypeScript. This is the only place they meet.
+test('every rejection the binding means leads with the seam’s reason token', options, () => {
+  const core = createNativeCore(native, { maxTopicsPerConnection: 1, maxConnections: 1 })
+
+  const cases = [
+    ['invalid-topic', () => core.publish(1000, '~gap', 'v')],
+    ['invalid-topic', () => core.publish(1000, 'a\nb', 'v')],
+    ['invalid-origin', () => core.publish(1000, 't', 'v', 'a\nid: 9-9')],
+    ['malformed-cursor', () => core.append('01-0', 't', 'v')],
+    ['malformed-cursor', () => core.encode('nonsense', 't', 'v')],
+    ['malformed-cursor', () => core.subscribe(['t'], undefined, '1e5-0')],
+    ['too-many-topics', () => core.subscribe(['a', 'b'], undefined, undefined)],
+  ]
+
+  for (const [reason, call] of cases) {
+    assert.throws(call, (error) => {
+      assert.equal(error.name, 'CoreError', `${reason}: must arrive as a CoreError`)
+      assert.equal(error.reason, reason)
+      // The token is the *whole* first segment, not a substring found somewhere in it.
+      // Matching loosely is what let unrelated failures pass for protocol rejections.
+      assert.equal(error.message.split(':')[0], reason, error.message)
+      return true
+    })
+  }
+
+  // The capacity reasons need a live subscriber to reach.
+  core.subscribe(['t'], 'k', undefined)
+  assert.throws(
+    () => core.subscribe(['t'], 'k', undefined),
+    (error) => error.reason === 'max-connections' && error.message.startsWith('max-connections'),
+  )
+})
+
+test('an error the binding did not mean as a rejection is passed through untouched', options, () => {
+  // The seam cannot tell a napi conversion failure, a panic unwound through the boundary
+  // or a version-skewed addon apart from each other, and must not pretend to: anything
+  // without a known token is not a statement about the request. It reaches the handler as
+  // itself, which answers 500 and reports it, rather than as a 400 blaming the caller.
+  const exploding = {
+    ...native,
+    Hub: class {
+      subscribe() {
+        throw new Error('Failed to convert JS value into rust type `String`')
+      }
+    },
+  }
+  const core = createNativeCore(exploding, {})
+  assert.throws(
+    () => core.subscribe(['t'], undefined, undefined),
+    (error) => {
+      assert.notEqual(error.name, 'CoreError', 'a binding failure is not a protocol rejection')
+      assert.equal(error.reason, undefined)
+      assert.match(error.message, /convert JS value/)
+      return true
+    },
+  )
+})
+
 test('append and encode agree with publish byte-for-byte', options, async () => {
   const core = createNativeCore(native, {})
   const published = core.publish(1000, 't', 'v', 'tab-7')

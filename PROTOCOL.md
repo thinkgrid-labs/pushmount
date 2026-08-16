@@ -131,6 +131,13 @@ Each topic MUST be percent-encoded individually and then joined with `,` (U+002C
 Topics may legally contain commas, so the server MUST percent-decode each element after
 splitting, never before.
 
+A `last_event_id` whose percent-encoding cannot be decoded MUST be refused under §4.2, not
+read as an absent cursor. The two are indistinguishable to a decoder that reports failure
+by returning nothing, and the difference is the whole of §8: a request carrying a cursor
+gets a checkpoint that tells it what it missed, and a request carrying none gets a live
+stream and no such promise. A client that presented a cursor and was silently given the
+second has lost every event since, with nothing to report it.
+
 The encoded `topics` value SHOULD NOT exceed 4096 bytes. Common proxy configurations
 (nginx's default `large_client_header_buffers`) reject request lines beyond 8 KB, and
 exceeding it produces a failure that looks like a server bug.

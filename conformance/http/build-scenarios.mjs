@@ -77,6 +77,26 @@ const scenarios = {
       steps: [{ op: 'request', path: '/events?topics=t&last_event_id=nonsense', expect: { status: 400 } }],
     },
     {
+      id: 'H42', ref: '§4.1',
+      desc: 'a cursor with malformed percent-encoding is a 400, not a decode failure quietly read as "no cursor"',
+      steps: [
+        // The mirror of H3, and the one an implementation is far likelier to get wrong:
+        // decoding `topics` and decoding `last_event_id` are the same operation, but a
+        // failure means different things. A `topics` decode that fails has nothing to
+        // subscribe to and fails loudly on its own. A cursor decode that fails still has
+        // a perfectly serviceable request underneath it, so the tempting shape — decode,
+        // fall back to null, carry on — opens a live-only stream. The client presented a
+        // cursor, gets no `last-event-id-checkpoint` back because the server believes
+        // there was none, and every event published since is gone with nothing reported.
+        { op: 'request', path: '/events?topics=t&last_event_id=%ZZ', expect: { status: 400 } },
+        // A truncated UTF-8 sequence is the same failure without the obvious tell: the
+        // escapes are well-formed and it is the multi-byte character they spell that is
+        // incomplete, so a hand-rolled `%XX` validator passes it and `decodeURIComponent`
+        // still throws.
+        { op: 'request', path: '/events?topics=t&last_event_id=%E0%A4%A', expect: { status: 400 } },
+      ],
+    },
+    {
       id: 'H8', ref: '§2.1', desc: 'a non-canonical cursor is refused — leading zeros would resolve to a different event elsewhere',
       steps: [
         { op: 'request', path: '/events?topics=t', headers: { 'last-event-id': '01-0' }, expect: { status: 400 } },

@@ -23,6 +23,7 @@ import {
   type CheckpointKind,
   type CoreConfig,
   type HubCore,
+  type SubscribeRejection,
 } from './core.js'
 
 /** The surface `bindings/node` exposes. Structural, so no import is needed. */
@@ -62,33 +63,48 @@ interface NativeHub {
 }
 
 /**
- * Maps the binding's thrown errors onto the seam's rejection reasons.
+ * The reason tokens the binding puts at the front of every rejection it means.
  *
- * napi surfaces a Rust `Err` as a thrown `Error` carrying the message the core chose,
- * so the mapping is on message text. The messages are part of the binding's contract
- * and are asserted in the parity tests, rather than being incidental strings.
+ * A closed set, and the whole contract between the two halves. napi has exactly two
+ * string channels — the JS error's `code`, which it fills with its own coarse status, and
+ * the message — so the reason travels as the message's first `:`-delimited segment:
+ * `too-many-topics`, or `invalid-topic: topic exceeds 255 bytes`.
  */
-function toCoreError(error: unknown): CoreError {
+const REASONS: Readonly<Record<string, SubscribeRejection>> = {
+  'invalid-topic': 'invalid-topic',
+  'invalid-origin': 'invalid-origin',
+  'too-many-topics': 'too-many-topics',
+  'max-connections': 'max-connections',
+  'max-connections-per-key': 'max-connections-per-key',
+  // The append and encode paths reject a non-canonical §2.1 id under the cursor's reason,
+  // as the TypeScript core does. A binding-specific third reason would be a difference
+  // the seam has no use for.
+  'malformed-cursor': 'malformed-cursor',
+}
+
+/**
+ * Maps the binding's thrown errors onto the seam's rejection reasons — and, just as
+ * importantly, declines to map the ones that are not rejections at all.
+ *
+ * This used to search the message for substrings and call whatever matched nothing an
+ * `invalid-topic`. Every error the binding could produce for a reason of its own — a napi
+ * argument conversion that failed, a Rust panic unwound through the boundary, an addon
+ * built against a different version — arrived at the client as `400 invalid-topic`. The
+ * server told the caller its request was malformed while the fault was entirely the
+ * server's, `onError` was never called, and the counter it landed in was `bad-request`.
+ * A broken native core was invisible in the metrics and blamed on whoever asked.
+ *
+ * So an unrecognised error is returned unchanged, and the handler above answers 500 for
+ * it. That includes the case where the addon and this package disagree about the tokens,
+ * which is a version skew — loud is the only useful behaviour there.
+ */
+function asCoreError(error: unknown): unknown {
   const message = error instanceof Error ? error.message : String(error)
-  // Covers both "malformed cursor" and "malformed id" — the append and encode paths
-  // reject a non-canonical §2.1 id, and the TypeScript core files that under the same
-  // reason. A binding-specific third reason would be a difference the seam has no use for.
-  if (message.includes('malformed')) {
-    return new CoreError('malformed-cursor', message)
-  }
-  if (message.includes('origin')) {
-    return new CoreError('invalid-origin', message)
-  }
-  if (message.includes('too-many-topics')) {
-    return new CoreError('too-many-topics', message)
-  }
-  if (message.includes('max-connections-per-key')) {
-    return new CoreError('max-connections-per-key', message)
-  }
-  if (message.includes('max-connections')) {
-    return new CoreError('max-connections', message)
-  }
-  return new CoreError('invalid-topic', message)
+  const separator = message.indexOf(':')
+  const token = separator === -1 ? message : message.slice(0, separator)
+  const reason = REASONS[token]
+  if (reason === undefined) return error
+  return new CoreError(reason, message)
 }
 
 export function createNativeCore(native: NativeModule, config: CoreConfig = {}): HubCore {
@@ -105,7 +121,7 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
       try {
         return hub.publish(nowMs, topic, payload, origin ?? null)
       } catch (error) {
-        throw toCoreError(error)
+        throw asCoreError(error)
       }
     },
 
@@ -113,7 +129,7 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
       try {
         return hub.append(id, topic, payload, origin ?? null)
       } catch (error) {
-        throw toCoreError(error)
+        throw asCoreError(error)
       }
     },
 
@@ -121,7 +137,7 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
       try {
         return hub.encode(id, topic, payload, origin ?? null)
       } catch (error) {
-        throw toCoreError(error)
+        throw asCoreError(error)
       }
     },
 
@@ -134,7 +150,7 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
           replay: result.replay,
         }
       } catch (error) {
-        throw toCoreError(error)
+        throw asCoreError(error)
       }
     },
 
