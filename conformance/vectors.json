@@ -432,5 +432,148 @@
         "5-3"
       ]
     }
+  ],
+  "checkpoint": [
+    {
+      "id": "CP1",
+      "ref": "§5",
+      "desc": "the cold-start cursor 0-0 on a ring that never trimmed is not a gap",
+      "maxHistoryBytes": 1048576,
+      "publishes": [
+        [
+          1000,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ],
+        [
+          1001,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ],
+      "cursor": [
+        0,
+        0
+      ],
+      "expected": "echo"
+    },
+    {
+      "id": "CP2",
+      "ref": "§4.5",
+      "desc": "a cursor at a retained event replays without a gap",
+      "maxHistoryBytes": 1048576,
+      "publishes": [
+        [
+          1000,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ],
+        [
+          1001,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ],
+        [
+          1002,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ],
+      "cursor": [
+        1000,
+        0
+      ],
+      "expected": "echo"
+    },
+    {
+      "id": "CP3",
+      "ref": "§7.1",
+      "desc": "a cursor below everything the ring evicted is a gap",
+      "maxHistoryBytes": 100,
+      "publishes": [
+        [
+          1000,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ],
+        [
+          1001,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ],
+      "cursor": [
+        0,
+        0
+      ],
+      "expected": "earliest"
+    },
+    {
+      "id": "CP4",
+      "ref": "§7.1",
+      "desc": "a cursor AT the evicted id is not a gap — that event is the one the client holds",
+      "maxHistoryBytes": 100,
+      "publishes": [
+        [
+          1000,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ],
+        [
+          1001,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ],
+      "cursor": [
+        1000,
+        0
+      ],
+      "expected": "echo"
+    },
+    {
+      "id": "CP5",
+      "desc": "a hub that has published nothing reports no gap",
+      "maxHistoryBytes": 1048576,
+      "publishes": [],
+      "cursor": [
+        0,
+        0
+      ],
+      "expected": "echo"
+    },
+    {
+      "id": "CP6",
+      "ref": "§4.1",
+      "desc": "no cursor means the checkpoint header is omitted entirely",
+      "maxHistoryBytes": 1048576,
+      "publishes": [
+        [
+          1000,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ],
+      "cursor": null,
+      "expected": "absent"
+    },
+    {
+      "id": "CP7",
+      "ref": "§7.1",
+      "desc": "an event larger than the whole budget is evicted on arrival and must still report a gap",
+      "maxHistoryBytes": 10,
+      "publishes": [
+        [
+          1000,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ],
+      "cursor": [
+        0,
+        0
+      ],
+      "expected": "earliest"
+    }
   ]
 }

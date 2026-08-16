@@ -18,11 +18,29 @@ pub(crate) struct History {
     entries: VecDeque<Entry>,
     bytes: usize,
     max_bytes: usize,
+    /// The highest id ever evicted, or `None` if nothing has been.
+    ///
+    /// This — not the oldest *retained* entry — is what decides whether a cursor missed
+    /// something. The two differ in both directions, and both were wrong:
+    ///
+    /// - A ring that has never trimmed still has an oldest entry, and every cursor below
+    ///   it compared as truncated even though nothing was dropped. `0-0`, the cold-start
+    ///   cursor §5 hands out, is below every real id — so the documented first-page-load
+    ///   path reported a gap to a client that had missed nothing.
+    /// - A single frame larger than the whole budget is evicted on the push that added
+    ///   it, leaving the ring *empty*. With no oldest entry there was nothing to compare
+    ///   against, so a real loss was reported as "nothing missed" — silent staleness,
+    ///   which is the one failure this protocol exists to eliminate.
+    ///
+    /// Kept as a maximum rather than "the last one evicted" so that an out-of-order
+    /// `append` — a backplane replaying into the ring — can only push the mark forward.
+    /// Over-reporting is a false alarm; under-reporting is data loss with no symptom.
+    last_trimmed: Option<EventId>,
 }
 
 impl History {
     pub(crate) fn new(max_bytes: usize) -> History {
-        History { entries: VecDeque::new(), bytes: 0, max_bytes }
+        History { entries: VecDeque::new(), bytes: 0, max_bytes, last_trimmed: None }
     }
 
     pub(crate) fn push(&mut self, entry: Entry) {
@@ -30,12 +48,22 @@ impl History {
         self.entries.push_back(entry);
         while self.bytes > self.max_bytes {
             match self.entries.pop_front() {
-                Some(dropped) => self.bytes -= dropped.frame.len(),
+                Some(dropped) => {
+                    self.bytes -= dropped.frame.len();
+                    if self.last_trimmed.is_none_or(|t| dropped.id > t) {
+                        self.last_trimmed = Some(dropped.id);
+                    }
+                }
                 None => break,
             }
         }
     }
 
+    pub(crate) fn last_trimmed(&self) -> Option<EventId> {
+        self.last_trimmed
+    }
+
+    #[cfg(test)]
     pub(crate) fn oldest(&self) -> Option<EventId> {
         self.entries.front().map(|e| e.id)
     }

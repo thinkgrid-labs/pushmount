@@ -10,6 +10,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { CoreError, type HubCore } from './core.js'
 import { createTsCore } from './core-ts.js'
 import type { Backplane } from './backplane.js'
+import {
+  createCounters,
+  snapshot,
+  type CloseReason,
+  type HubStats,
+  type RejectReason,
+} from './stats.js'
 
 const encoder = new TextEncoder()
 const FRAME_OK = encoder.encode(':ok\n\n')
@@ -196,7 +203,26 @@ export function createHub(options: CreateHubOptions = {}) {
   const connections = new Map<number, Connection>()
   /** Revalidation intervals, one per handler that asked for one. Cleared by `close`. */
   const timers = new Set<NodeJS.Timeout>()
+  const counters = createCounters(now)
   let closed = false
+
+  /**
+   * Refuses a request and records why, in one place.
+   *
+   * The reason is derived from the status rather than passed alongside it, because the
+   * two travelling separately is how a bucket ends up mislabelled — and a mislabelled
+   * rejection metric is worse than none, since it sends whoever reads it after the wrong
+   * cause entirely.
+   */
+  function reject(
+    res: ServerResponse,
+    status: number,
+    message: string,
+    extra: Record<string, string> = {},
+  ): void {
+    counters.rejected[rejectReasonFor(status)]++
+    fail(res, status, message, extra)
+  }
 
   if (options.suppressClusterWarning !== true) {
     const supervisor = detectCluster()
@@ -225,8 +251,10 @@ export function createHub(options: CreateHubOptions = {}) {
           event.payload,
           event.origin,
         )
+        counters.received++
         fanOut(frame, targets)
       } catch (error) {
+        counters.errors.backplane++
         onError(error)
       }
     })
@@ -259,12 +287,20 @@ export function createHub(options: CreateHubOptions = {}) {
     }
   }
 
-  /** §8.2 — removal must be idempotent; both close events fire in the normal case. */
-  function drop(id: number, endFrame?: Uint8Array): void {
+  /**
+   * §8.2 — removal must be idempotent; both close events fire in the normal case.
+   *
+   * The idempotence is what makes `closed[reason]` trustworthy: a connection this hub
+   * drops deliberately is deleted from the map before `res.end()` runs, so the `close`
+   * event that follows finds nothing and the deliberate reason is the one recorded,
+   * rather than being overwritten by the `client` close it causes.
+   */
+  function drop(id: number, reason: CloseReason, endFrame?: Uint8Array): void {
     const conn = connections.get(id)
     if (conn === undefined) return
     connections.delete(id)
     core.remove(id)
+    counters.closed[reason]++
     try {
       // Same reason the keepalive skips a pending connection: writing a frame before
       // `writeHead` flushes Node's implicit headers. A connection dropped while still
@@ -287,6 +323,7 @@ export function createHub(options: CreateHubOptions = {}) {
       writeTo(conn, frame)
       delivered++
     }
+    counters.delivered += delivered
     return delivered
   }
 
@@ -308,7 +345,7 @@ export function createHub(options: CreateHubOptions = {}) {
     // §8.2 — the socket is the only thing that knows the true outstanding depth.
     const verdict = core.noteBuffer(conn.id, conn.res.writableLength)
     if (verdict === 'slow-consumer') {
-      drop(conn.id, core.slowConsumerFrame(conn.id))
+      drop(conn.id, 'slow-consumer', core.slowConsumerFrame(conn.id))
     }
   }
 
@@ -338,8 +375,15 @@ export function createHub(options: CreateHubOptions = {}) {
           // Delivery happens when this event comes back through onEvent, along with
           // every other process's. One ordering, everywhere.
           return backplane.publish(topic, payload, origin).then(
-            (id) => ({ id, delivered: deliveredFor(topic) }),
+            (id) => {
+              // Counted here rather than at the call, because until the backplane has
+              // accepted it there is no event: a write that fails reaches nobody, in
+              // this process or any other.
+              counters.published++
+              return { id, delivered: deliveredFor(topic) }
+            },
             (error) => {
+              counters.errors.publish++
               onError(error)
               throw error
             },
@@ -347,11 +391,30 @@ export function createHub(options: CreateHubOptions = {}) {
         }
 
         const { id, frame, targets } = core.publish(now(), topic, payload, origin)
+        counters.published++
         return Promise.resolve({ id, delivered: fanOut(frame, targets) })
       } catch (error) {
+        counters.errors.publish++
         onError(error)
         return Promise.reject(error instanceof Error ? error : new Error(String(error)))
       }
+    },
+
+    /**
+     * A snapshot of what this hub has done and is doing — §10.
+     *
+     * Plain data, cheap enough to call on a scrape interval, and safe to serialise. Every
+     * count is monotonic since `createHub` and `uptimeMs` comes with it, so rates are the
+     * caller's to derive; see `HubStats` for why none are computed here.
+     *
+     * Deliberately not exposed as an endpoint. This library's premise is that your
+     * authentication has already run before the hub sees a request, and a metrics route
+     * mounted by the library would be the one thing in it that bypassed yours — connection
+     * counts and rejection reasons are a description of your traffic. Mount it yourself,
+     * behind whatever guards the rest of your operational surface.
+     */
+    stats(): HubStats {
+      return snapshot(counters, now, connections.values())
     },
 
     /** §5 — the current cursor, for closing the cold-start window. */
@@ -378,7 +441,7 @@ export function createHub(options: CreateHubOptions = {}) {
       let n = 0
       for (const conn of [...connections.values()]) {
         if (predicate(conn.appReq as Req)) {
-          drop(conn.id)
+          drop(conn.id, 'evicted')
           n++
         }
       }
@@ -387,7 +450,7 @@ export function createHub(options: CreateHubOptions = {}) {
 
     close(): void {
       closed = true
-      for (const id of [...connections.keys()]) drop(id)
+      for (const id of [...connections.keys()]) drop(id, 'hub-closed')
       for (const timer of timers) clearInterval(timer)
       timers.clear()
       if (keepAlive !== undefined) {
@@ -446,12 +509,13 @@ export function createHub(options: CreateHubOptions = {}) {
             try {
               permitted = await authorize(conn.appReq as Req, topic)
             } catch (error) {
+              counters.errors.authorize++
               onError(error)
               permitted = false
             }
             if (!permitted) break
           }
-          if (!permitted && connections.get(conn.id) === conn) drop(conn.id)
+          if (!permitted && connections.get(conn.id) === conn) drop(conn.id, 'revalidated')
         }
       }
 
@@ -464,18 +528,18 @@ export function createHub(options: CreateHubOptions = {}) {
         const search = req.url === undefined ? '' : req.url.slice(req.url.indexOf('?') + 1)
         const rawTopics = rawParam(search, 'topics')
         if (rawTopics === null || rawTopics === '') {
-          return fail(res, 400, 'topics parameter is required')
+          return reject(res, 400, 'topics parameter is required')
         }
 
         let topics: string[]
         try {
           topics = rawTopics.split(',').map(decodeURIComponent)
         } catch {
-          return fail(res, 400, 'topics contains malformed percent-encoding')
+          return reject(res, 400, 'topics contains malformed percent-encoding')
         }
         for (const topic of topics) {
           if (!core.validTopic(topic)) {
-            return fail(res, 400, `invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
+            return reject(res, 400, `invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
           }
         }
 
@@ -495,15 +559,16 @@ export function createHub(options: CreateHubOptions = {}) {
             try {
               ok = await authorize(appReq, topic)
             } catch (error) {
+              counters.errors.authorize++
               onError(error)
-              return fail(res, 500, 'authorization failed')
+              return reject(res, 500, 'authorization failed')
             }
             ;(ok ? allowed : denied).push(topic)
           }
         }
-        if (allowed.length === 0) return fail(res, 403, 'no requested topic is authorized')
+        if (allowed.length === 0) return reject(res, 403, 'no requested topic is authorized')
 
-        if (closed) return fail(res, 503, 'hub is closed')
+        if (closed) return reject(res, 503, 'hub is closed')
 
         // ---- §4.5 the atomic block -------------------------------------------
         // NO `await` MAY APPEAR BETWEEN HERE AND THE END OF THIS BLOCK. Registration,
@@ -519,7 +584,7 @@ export function createHub(options: CreateHubOptions = {}) {
           // client would believe it resumed and would never be told otherwise.
           const status =
             reason === 'max-connections' || reason === 'max-connections-per-key' ? 429 : 400
-          return fail(res, status, reason, status === 429 ? { 'retry-after': '5' } : {})
+          return reject(res, status, reason, status === 429 ? { 'retry-after': '5' } : {})
         }
         // The subscriber is registered now. From here a live frame may arrive at any
         // time, so it goes to `conn.pending` until the response is fully opened.
@@ -533,12 +598,13 @@ export function createHub(options: CreateHubOptions = {}) {
           owner,
         }
         connections.set(subscribed.id, conn)
+        counters.opened++
 
         // §8.2 — registered here rather than after the response opens, because the
         // backplane branch below awaits. A client that aborts during that round trip
         // would otherwise leave a subscriber nothing ever removes: its `pending` array
         // grows with every publish for the lifetime of the process.
-        const teardown = (): void => drop(subscribed.id)
+        const teardown = (): void => drop(subscribed.id, 'client')
         res.on('close', teardown)
         req.on('close', teardown)
         res.on('error', teardown)
@@ -560,6 +626,7 @@ export function createHub(options: CreateHubOptions = {}) {
             // recorded — out of id order, on every reconnect.
             replay = shared.events.map((e) => core.encode(e.id, e.topic, e.payload, e.origin))
           } catch (error) {
+            counters.errors.backplane++
             onError(error)
             // A backplane that cannot answer must not be reported as "nothing missed".
             truncated = true
@@ -573,7 +640,7 @@ export function createHub(options: CreateHubOptions = {}) {
         // has already finished with.
         if (connections.get(subscribed.id) !== conn) {
           try {
-            if (!res.headersSent) fail(res, 503, 'connection closed')
+            if (!res.headersSent) reject(res, 503, 'connection closed')
           } catch {
             // The socket went away underneath us; there is no one left to tell.
           }
@@ -600,8 +667,18 @@ export function createHub(options: CreateHubOptions = {}) {
         ensureKeepAlive()
 
         res.write(FRAME_OK)
-        if (denied.length > 0) res.write(core.deniedFrame(denied))
-        if (truncated) res.write(core.truncatedFrame(subscribed.id))
+        // Counted where the frames are written rather than where they were decided, so a
+        // connection lost across the backplane await — which returns above without
+        // writing anything — never reports a truncation the client was not told about.
+        if (denied.length > 0) {
+          counters.denied++
+          res.write(core.deniedFrame(denied))
+        }
+        if (truncated) {
+          counters.truncated++
+          res.write(core.truncatedFrame(subscribed.id))
+        }
+        counters.replayed += replay.length
         for (const frame of replay) res.write(frame)
 
         // Anything that arrived while replay was in flight, in the order it arrived.
@@ -643,6 +720,28 @@ function header(req: IncomingMessage, name: string): string | null {
   const v = req.headers[name]
   if (v === undefined) return null
   return Array.isArray(v) ? (v[0] ?? null) : v
+}
+
+/**
+ * Maps the status the handler chose onto the bucket it is counted in.
+ *
+ * `bad-request` is the default rather than a case so that a status added later is counted
+ * as something instead of throwing or silently vanishing from the totals — a metric that
+ * under-reports is the one failure mode worth engineering against here.
+ */
+function rejectReasonFor(status: number): RejectReason {
+  switch (status) {
+    case 403:
+      return 'unauthorized'
+    case 429:
+      return 'over-capacity'
+    case 500:
+      return 'authorize-error'
+    case 503:
+      return 'unavailable'
+    default:
+      return 'bad-request'
+  }
 }
 
 function fail(

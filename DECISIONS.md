@@ -5,6 +5,187 @@ Newest first.
 
 ---
 
+## D7 — The Nest adapter provides a hub, not a route
+
+**Date:** 16 August 2026 · **Status:** accepted
+
+`@aghoz/nest` ships `AghozModule.forRoot`/`forRootAsync`, an `AGHOZ_HUB` token and
+`createAghozHandler`. It does **not** register a controller, and it works on both the
+Express and Fastify platforms.
+
+### Why no controller
+
+Auto-mounting is what a Nest integration is normally expected to do, and it is wrong here.
+A route this package registered would carry none of the application's `@UseGuards()`, and
+guards are where a Nest application's authentication lives. The premise of the whole
+library is that the host's authentication runs *before* the hub sees a request — so the
+convenience feature would quietly produce the one route in the app that bypassed it.
+
+This is the same line D5 drew in refusing a metrics endpoint, and it is worth being
+consistent about: this library does not mount routes, because it cannot know what is
+supposed to guard them.
+
+The cost is a ten-line controller in the README. The alternative was a class generated
+inside `forRoot` — which also cannot accept the user's guards, since decorators are applied
+at class-definition time, before `forRoot` is ever called.
+
+### Why `@Sse()` is unusable
+
+Predicted on the roadmap and confirmed. `@Sse()` takes an Observable and writes the
+response itself: it owns the status, the headers and the framing, and exposes no way to add
+one. `last-event-id-checkpoint` (§4.4) is therefore unreachable, so a client can never be
+told it missed events — which is the only thing this library does that polling does not.
+The adapter uses `@Res()`, putting Nest in library-specific mode.
+
+Exactly the reason `@aghoz/client` does not use `EventSource`: an abstraction that owns the
+response owns what can be said in it.
+
+### `beforeApplicationShutdown`, not `onApplicationShutdown`
+
+Found by the test suite hanging after every assertion passed. Nest tears down in this
+order: `onModuleDestroy` → `beforeApplicationShutdown` → **close the HTTP server** →
+`onApplicationShutdown`.
+
+`server.close()` waits for open connections to end, and an SSE stream never ends on its own
+— that is what it is for. A hub still holding subscribers when the server closes means
+`app.close()` never resolves, and closing at `onApplicationShutdown` is too late to help
+because nothing reaches it. Dropping subscribers one step earlier lets the server find
+itself idle.
+
+Worth recording because the wrong hook is the obvious choice, the symptom appears nowhere
+near the cause, and it is invisible to anyone who never opens a stream before shutting down.
+
+---
+
+## D6 — Truncation is decided against the newest evicted id, not the oldest retained one
+
+**Date:** 16 August 2026 · **Status:** accepted · **Amends:** PROTOCOL.md §4.4, §8.1
+
+Both cores computed `truncated = cursor < oldest_retained_event`. That is wrong in both
+directions, and the metrics work in D5 is what surfaced it — `truncated` was the number
+the README had just finished calling the one worth alerting on.
+
+### The false positive
+
+`0-0` is the cursor §5 hands out before anything has been published, and the quickstart
+tells you to pass it to the page alongside its initial data. It sorts below every real id,
+so on a freshly booted hub the first stream connect compared as `earliest` — replaying
+everything correctly *and* reporting a gap the client could not possibly have had:
+
+```
+cold cursor      : 0-0
+history length   : 2 (nothing was ever trimmed)
+frames replayed  : 2
+truncated        : true
+```
+
+Every first page load after a deploy refetched, and a signal that fires when nothing is
+wrong is a signal people learn to ignore.
+
+### The false negative, which is worse
+
+An event larger than the entire history budget is evicted by the push that stored it,
+leaving the ring **empty**. With no oldest retained entry there was nothing to compare
+against, so the guard `oldest !== undefined` short-circuited and a real loss was reported
+as "nothing missed". That is silent staleness — the single failure mode §0 says this
+protocol exists to eliminate — reachable from one oversized publish.
+
+### Decision
+
+Track the **highest id ever evicted** and compare against that:
+
+```
+truncated = last_trimmed !== null && cursor < last_trimmed
+```
+
+A cursor *equal to* the evicted id is not a gap: that is the event the client already
+holds, and everything after it is still retained. Never having evicted anything means no
+cursor can have missed anything, including `0-0`.
+
+Held as a maximum rather than "the last one popped", so an out-of-order `append` — a
+backplane replaying into the ring — can only push the mark forward. Over-reporting is a
+false alarm; under-reporting is data loss with no symptom, and the two are not equally bad.
+
+### Why this got a corpus category rather than two matching patches
+
+`checkpoint` is the sixth group in `conformance/vectors.json` (7 vectors, 50 → 57). The
+bug existed identically in TypeScript and Rust, which is exactly the failure the corpus is
+supposed to make impossible — and it had gone unnoticed because the corpus covered
+encoding, validation and id order, but never the decision those exist to serve.
+
+Fixing it in two places without a vector would have left the next implementation free to
+reintroduce it. All three runners now execute the same seven vectors: the TypeScript core,
+the Rust core directly, and the Rust core through its Node binding. Confirmed to fail on
+the unfixed code first — CP1, CP4 and CP7, identically in both languages.
+
+No ABI change: the binding already reported the checkpoint as `"absent"`/`"echo"`/
+`"earliest"`, so the corpus asks it the same question it already answered.
+
+---
+
+## D5 — Counters live in the handler layer, and are counters rather than rates
+
+**Date:** 16 August 2026 · **Status:** accepted
+
+`hub.stats()` is implemented entirely in `packages/server/src/stats.ts` and wired from
+`create-hub.ts`. Nothing was added to `hub.ts`, to `HubCore`, or to the C ABI.
+
+### Why not the core
+
+D3 put one Rust core behind a stable C ABI precisely so protocol rules could not diverge
+between languages, and `conformance/vectors.json` is what enforces it. A counter is not a
+protocol rule. Putting one in the core would have meant a third ABI break, a new corpus
+category and a matching implementation in every future binding — for a number no wire
+format depends on and no other implementation has to agree about. `hub.ts` already says
+"do not add behaviour here that the corpus does not pin down", and this is the first real
+test of that line.
+
+The placement also happens to be where the interesting failures are. Every close reason
+worth distinguishing — a client abort, a §8.2 drop, a §4.6 revocation, an eviction, a
+shutdown — is a socket-layer event the core never sees.
+
+**The cost, accepted:** ring occupancy — how full `maxHistoryBytes` is — is core state the
+ABI does not expose, so it is not reported. `truncated` covers the consequence, which is
+the part anyone would alert on; the cause can be added when the ABI grows a reason to
+change anyway. Buying it now would mean breaking the ABI for a gauge.
+
+### Why totals and not rates
+
+The roadmap item said "publish rate". What shipped is `published` plus `uptimeMs`.
+
+Any window this library averaged over would be the wrong one for someone, and it is not
+reversible from the outside: a consumer handed a smoothed rate cannot recover the counter,
+while a consumer handed a counter can compute any rate it likes. Prometheus, StatsD and
+OpenTelemetry all expect counters and derive rates themselves, so emitting a rate would
+mean every one of them undoing work this library did not need to do.
+
+### Why closes are attributed rather than totalled
+
+`closed` is a map by cause, not a number, and `rejected` likewise. A total that is right
+but filed under the wrong reason is worse than no metric at all — it sends whoever reads
+it after the wrong problem with full confidence.
+
+Making that trustworthy shaped the code: `drop()` takes its reason from the caller and is
+idempotent, deleting from the connection map *before* `res.end()`. Without that ordering
+the `close` event a deliberate drop causes would land a second later and record `client`,
+and every eviction, revocation and slow-consumer drop would be invisible under a
+plausible-looking client-churn number. `packages/server/test/stats.test.mjs` pins it.
+
+Rejections are bucketed by a `status → reason` mapping in one place rather than at each
+call site, for the same reason: the two travelling separately is how a bucket ends up
+mislabelled. Its default arm is `bad-request`, so a status added later is counted as
+something rather than vanishing from the totals.
+
+### Not shipped: a metrics endpoint
+
+`cursorHandler()` exists, so a `metricsHandler()` would have been the consistent move. It
+was rejected. The premise of this library is that the host application's authentication
+runs before the hub sees a request; a route the library mounts itself would be the one
+thing in it that bypassed that, and connection counts and rejection reasons are a
+description of the host's traffic. The README shows the three-line mount instead.
+
+---
+
 ## D4 — Name: aghoz, final
 
 **Date:** 15 August 2026 · **Status:** accepted · **Supersedes:** D0

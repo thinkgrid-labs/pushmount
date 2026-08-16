@@ -204,7 +204,12 @@ impl Hub {
         let (checkpoint, replay) = match cursor {
             None => (Checkpoint::Absent, Vec::new()),
             Some(c) => {
-                let truncated = self.history.oldest().is_some_and(|oldest| c < oldest);
+                // "Was anything dropped that this cursor had not already seen?" — the
+                // question §7.1 actually asks. See `History::last_trimmed` for why the
+                // oldest retained entry is the wrong thing to compare against. A cursor
+                // equal to the evicted id is NOT a gap: that is the event the client
+                // already holds, and everything after it is still here.
+                let truncated = self.history.last_trimmed().is_some_and(|t| c < t);
                 let frames: Vec<Vec<u8>> =
                     self.history.since(c, &subscribed).map(|e| e.frame.clone()).collect();
                 (if truncated { Checkpoint::Earliest } else { Checkpoint::Echo(c) }, frames)

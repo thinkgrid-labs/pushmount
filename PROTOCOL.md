@@ -188,8 +188,26 @@ on the socket, and MUST clear any socket idle timeout.
 
 | Value | Meaning |
 |---|---|
-| the cursor, echoed | History reaches back to the cursor. Nothing was missed. |
-| `earliest` | History no longer reaches the cursor. Events were missed. |
+| the cursor, echoed | Every event after the cursor is still retained. Nothing was missed. |
+| `earliest` | An event after the cursor has been evicted. Events were missed. |
+
+The server MUST decide this by comparing the cursor against **the newest event it has
+ever evicted**, not against the oldest event it currently retains. A server that has
+evicted nothing MUST echo every cursor, including `0-0`.
+
+The distinction is not cosmetic, and comparing against the oldest retained event is wrong
+in both directions:
+
+- A server that has never evicted anything still has an oldest retained event. Every
+  cursor below it — including the `0-0` that §5 hands out before the first publish —
+  compares as `earliest` despite nothing having been dropped. That makes a cold start
+  report a gap on every first page load.
+- An event larger than the entire history budget is evicted by the push that stored it,
+  leaving the history empty. With no oldest retained event to compare against, a real
+  loss compares as "nothing missed" — silent staleness, which §0 exists to eliminate.
+
+A cursor **equal to** the newest evicted id MUST be echoed: that event is the one the
+client already holds, and everything after it is still retained.
 
 Header names are case-insensitive; HTTP/2 lowercases them regardless.
 
@@ -421,7 +439,8 @@ Two conditions, one client-facing callback.
 
 ### 8.1 `history-truncated`
 
-The presented cursor is older than the oldest retained event. Signalled **twice**:
+An event newer than the presented cursor has been evicted from history — see §4.4 for why
+this is not the same as "older than the oldest retained event". Signalled **twice**:
 `last-event-id-checkpoint: earliest` in the head, and a `~gap` frame in the body.
 
 The redundancy is intentional. The header is authoritative and arrives before any parsing;

@@ -181,6 +181,26 @@ export class Hub {
   #history: HistoryEntry[] = []
   #head = 0
   #bytes = 0
+  /**
+   * The highest id this ring has ever evicted, or null if it has never evicted anything.
+   *
+   * This — not the oldest *retained* entry — is what decides whether a cursor missed
+   * something. The two differ in both directions, and both were wrong:
+   *
+   * - A ring that has never trimmed still has an oldest entry, and every cursor below it
+   *   compared as "truncated" even though nothing was ever dropped. `0-0`, the cold-start
+   *   cursor §5 hands out, is below every real id — so the documented first-page-load path
+   *   reported a gap to a client that had missed nothing.
+   * - A single frame larger than the whole budget is evicted on the push that added it,
+   *   leaving the ring *empty*. With no oldest entry there was nothing to compare against,
+   *   so a real loss was reported as "nothing missed" — silent staleness, which is the one
+   *   failure this protocol exists to eliminate.
+   *
+   * Kept as a maximum rather than "the last one evicted" so that an out-of-order `append`
+   * — a backplane replaying into the ring — can only ever push the mark forward. Over-
+   * reporting is a false alarm; under-reporting is data loss with no symptom.
+   */
+  #lastTrimmed: EventId | null = null
   readonly #maxBytes: number
 
   constructor(options: HubOptions = {}) {
@@ -247,8 +267,12 @@ export class Hub {
     this.#history.push({ ms: id.ms, seq: id.seq, topic, frame })
     this.#bytes += frame.length
     while (this.#bytes > this.#maxBytes && this.#head < this.#history.length) {
-      this.#bytes -= this.#history[this.#head]!.frame.length
+      const dropped = this.#history[this.#head]!
+      this.#bytes -= dropped.frame.length
       this.#head++
+      if (this.#lastTrimmed === null || compareIds(dropped, this.#lastTrimmed) > 0) {
+        this.#lastTrimmed = { ms: dropped.ms, seq: dropped.seq }
+      }
     }
     if (this.#head > 1024) {
       this.#history = this.#history.slice(this.#head)
@@ -274,8 +298,13 @@ export class Hub {
   } {
     if (cursor === null) return { truncated: false, frames: [] }
 
-    const oldest = this.#history[this.#head]
-    const truncated = oldest !== undefined && compareIds(cursor, oldest) < 0
+    // "Was anything dropped that this cursor had not already seen?" — which is the
+    // question §7.1 actually asks. See `#lastTrimmed` for why the oldest retained entry
+    // is the wrong thing to compare against. A cursor equal to the evicted id is NOT a
+    // gap: that event is the one the client already holds, and everything after it is
+    // still here.
+    const truncated =
+      this.#lastTrimmed !== null && compareIds(cursor, this.#lastTrimmed) < 0
 
     const frames: Uint8Array[] = []
     for (let i = this.#head; i < this.#history.length; i++) {

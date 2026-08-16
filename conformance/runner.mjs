@@ -7,7 +7,11 @@
 //   validTopic(topic)                    -> boolean
 //   validOrigin(origin)                  -> boolean
 //   compareIds([msA,seqA], [msB,seqB])   -> -1 | 0 | 1
-//   newHub()                             -> { publish(nowMs, topic, payload) -> Uint8Array }
+//   newHub(maxHistoryBytes?)             -> {
+//     publish(nowMs, topic, payload)     -> Uint8Array
+//     checkpoint(cursor)                 -> 'absent' | 'echo' | 'earliest'
+//   }
+//     where `cursor` is null or [ms, seq], and `checkpoint` subscribes to topic 't'.
 //
 // Exits non-zero on any divergence. This is the gate PROTOCOL.md §12 describes; it is
 // the only thing that makes more than one implementation of the hub safe.
@@ -90,6 +94,19 @@ for (const v of vectors.monotonic) {
     actual = `threw: ${e.message}`
   }
   check(v.id, v.desc, v.expected.join(','), actual)
+}
+
+// ---- §4.5 / §7.1 the checkpoint decision
+for (const v of vectors.checkpoint) {
+  let actual
+  try {
+    const hub = impl.newHub(v.maxHistoryBytes)
+    for (const [nowMs, topic, payload] of v.publishes) hub.publish(nowMs, topic, payload)
+    actual = hub.checkpoint(v.cursor)
+  } catch (e) {
+    actual = `threw: ${e.message}`
+  }
+  check(v.id, v.desc, v.expected, actual)
 }
 
 // ---- report

@@ -49,5 +49,8 @@ export {
   createHub,
   type CreateHubOptions,
   type HandlerOptions,
+  type PublishOptions,
   type PublishAck,
 } from './create-hub.js'
+
+export type { HubStats, CloseReason, RejectReason } from './stats.js'

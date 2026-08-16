@@ -5,7 +5,9 @@
 //! reason more than one implementation of this protocol is a defensible position, so it
 //! must never fork.
 
-use aghoz_core::{encode_frame, validate_origin, validate_topic, EventId, Hub, HubConfig};
+use aghoz_core::{
+    encode_frame, validate_origin, validate_topic, Checkpoint, EventId, Hub, HubConfig,
+};
 use serde_json::Value;
 
 fn corpus() -> Value {
@@ -100,6 +102,54 @@ fn id_order_vectors() {
             v["desc"].as_str().unwrap()
         );
     }
+}
+
+/// §4.5 / §7.1 — whether a reconnecting client is told it missed events.
+///
+/// Runs the same corpus the JavaScript runner does. This category exists because the two
+/// implementations diverging here would be invisible: both would serve a stream, and only
+/// one would be honest about what it had dropped.
+#[test]
+fn checkpoint_vectors() {
+    let c = corpus();
+    let mut failures = Vec::new();
+    for v in c["checkpoint"].as_array().unwrap() {
+        let config = HubConfig {
+            max_history_bytes: v["maxHistoryBytes"].as_u64().unwrap() as usize,
+            ..HubConfig::default()
+        };
+        let mut hub = Hub::new(config);
+        for p in v["publishes"].as_array().unwrap() {
+            let a = p.as_array().unwrap();
+            hub.publish(
+                a[0].as_u64().unwrap(),
+                a[1].as_str().unwrap(),
+                a[2].as_str().unwrap(),
+                None,
+            )
+            .unwrap();
+        }
+
+        let cursor = v["cursor"].as_array().map(|a| EventId {
+            ms: a[0].as_u64().unwrap(),
+            seq: a[1].as_u64().unwrap(),
+        });
+        let effect = hub.subscribe(vec!["t".to_string()], None, cursor).unwrap();
+        let got = match effect.checkpoint {
+            Checkpoint::Absent => "absent",
+            Checkpoint::Echo(_) => "echo",
+            Checkpoint::Earliest => "earliest",
+        };
+        let want = v["expected"].as_str().unwrap();
+        if got != want {
+            failures.push(format!(
+                "  {}  {}\n      expected: {want}\n      actual:   {got}",
+                v["id"].as_str().unwrap(),
+                v["desc"].as_str().unwrap()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
 #[test]

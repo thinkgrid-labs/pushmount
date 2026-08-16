@@ -186,11 +186,68 @@ const vectors = {
       nowMs: [5, 5, 5, 5], expected: ['5-0', '5-1', '5-2', '5-3'],
     },
   ],
+
+  // ---- §4.5 / §7.1 the checkpoint decision ---------------------------------
+  //
+  // Whether a reconnecting client is told it missed events. Getting this wrong is
+  // invisible in both directions and expensive in both: a false `earliest` makes every
+  // cold start refetch and trains people to ignore the signal, and a false `echo` is
+  // silent staleness, which is the failure this protocol exists to eliminate.
+  //
+  // The rule these pin down is "was anything evicted that this cursor had not already
+  // seen?" — a comparison against the highest id ever DROPPED, not against the oldest
+  // id still retained. Frames here are 92 bytes each (`id: 1000-0` + `event: t` +
+  // `data:` with 64 bytes of payload), which is what makes the small budgets below
+  // trim a predictable number of them.
+  checkpoint: [
+    {
+      id: 'CP1', ref: '§5', desc: 'the cold-start cursor 0-0 on a ring that never trimmed is not a gap',
+      maxHistoryBytes: 1048576,
+      publishes: [[1000, 't', x64], [1001, 't', x64]],
+      cursor: [0, 0], expected: 'echo',
+    },
+    {
+      id: 'CP2', ref: '§4.5', desc: 'a cursor at a retained event replays without a gap',
+      maxHistoryBytes: 1048576,
+      publishes: [[1000, 't', x64], [1001, 't', x64], [1002, 't', x64]],
+      cursor: [1000, 0], expected: 'echo',
+    },
+    {
+      id: 'CP3', ref: '§7.1', desc: 'a cursor below everything the ring evicted is a gap',
+      maxHistoryBytes: 100,
+      publishes: [[1000, 't', x64], [1001, 't', x64]],
+      cursor: [0, 0], expected: 'earliest',
+    },
+    {
+      id: 'CP4', ref: '§7.1', desc: 'a cursor AT the evicted id is not a gap — that event is the one the client holds',
+      maxHistoryBytes: 100,
+      publishes: [[1000, 't', x64], [1001, 't', x64]],
+      cursor: [1000, 0], expected: 'echo',
+    },
+    {
+      id: 'CP5', desc: 'a hub that has published nothing reports no gap',
+      maxHistoryBytes: 1048576,
+      publishes: [],
+      cursor: [0, 0], expected: 'echo',
+    },
+    {
+      id: 'CP6', ref: '§4.1', desc: 'no cursor means the checkpoint header is omitted entirely',
+      maxHistoryBytes: 1048576,
+      publishes: [[1000, 't', x64]],
+      cursor: null, expected: 'absent',
+    },
+    {
+      id: 'CP7', ref: '§7.1', desc: 'an event larger than the whole budget is evicted on arrival and must still report a gap',
+      maxHistoryBytes: 10,
+      publishes: [[1000, 't', x64]],
+      cursor: [0, 0], expected: 'earliest',
+    },
+  ],
 }
 
 writeFileSync(new URL('./vectors.json', import.meta.url), JSON.stringify(vectors, null, 2) + '\n')
 console.log(
   `vectors.json written — ${vectors.encode.length} encode, ${vectors.topic.length} topic, ` +
   `${vectors.origin.length} origin, ${vectors.idOrder.length} id-order, ` +
-  `${vectors.monotonic.length} monotonic`
+  `${vectors.monotonic.length} monotonic, ${vectors.checkpoint.length} checkpoint`
 )

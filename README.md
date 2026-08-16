@@ -8,7 +8,7 @@
   <strong>Real-time server push for apps that already have a backend.</strong><br>
   Server-Sent Events (SSE) that mount into your existing app as a route — so your own
   authentication runs first, and per-user authorization is one line.<br>
-  <sub>Node.js today (Express, Fastify, React). The protocol core is Rust behind a C ABI,
+  <sub>Node.js today (Express, Fastify, NestJS, React). The protocol core is Rust behind a C ABI,
   so other languages follow.</sub>
 </p>
 
@@ -29,7 +29,7 @@ app.get('/events', hub.handler({
 No second service. No token exchange. No CORS.
 
 **aghoz** is a small, dependency-free real-time push library. It ships today for
-**Node.js** — **Express**, **Fastify** and **React** — and the protocol is specified and
+**Node.js** — **Express**, **Fastify**, **NestJS** and **React** — and the protocol is specified and
 conformance-tested independently of any one runtime, so further languages are a binding
 rather than a rewrite. It replaces polling (`refetchInterval`,
 `setInterval` + `fetch`) with live server-to-client updates over **Server-Sent Events**,
@@ -55,8 +55,8 @@ protocol core behind a C ABI for other languages.
 > protocol carries the name nowhere and a test still enforces that.
 >
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
-> by a shared [conformance corpus](./conformance/) of 50 vectors that every
-> implementation runs; the packages pass 149 tests plus 32 in Rust (11 of the 149 are
+> by a shared [conformance corpus](./conformance/) of 57 vectors that every
+> implementation runs; the packages pass 183 tests plus 33 in Rust (11 of the 183 are
 > backplane tests that skip themselves without a live Redis — CI provides one); and the
 > [example app](./examples/express-react) runs end to end, verified in CI. Every
 > significant decision — including the two that were reversed — is recorded with its
@@ -75,6 +75,8 @@ protocol core behind a C ABI for other languages.
 - [Quickstart](#quickstart) — [server](#server--three-additions-to-an-app-you-already-have) · [client](#client) · [collections](#collections-need-a-fold-not-a-cell)
 - [Things that will bite you](#things-that-will-bite-you)
 - [Multiple processes (Redis backplane)](#multiple-processes-redis-backplane)
+- [NestJS](#nestjs)
+- [Observability](#observability)
 - [Packages](#packages)
 - [Why Rust?](#why-rust)
 - [FAQ](#faq)
@@ -351,6 +353,142 @@ buys an ordering that is identical in every process.
 
 ---
 
+## NestJS
+
+```sh
+npm install @aghoz/nest
+```
+
+**Nest's own `@Sse()` decorator cannot be used, and that is why this package exists.**
+`@Sse()` takes an Observable and writes the response itself — it owns the status, the
+headers and the framing, and offers no way to add one of your own. So
+`last-event-id-checkpoint` (§4.4) is unreachable, and a client can never be told it missed
+events. That is the whole point of the library, and it is the same reason
+[the client avoids `EventSource`](#why-the-client-is-not-built-on-eventsource).
+
+The adapter takes the response over with `@Res()` instead, which puts Nest in
+library-specific mode. It works on **both the Express and Fastify platforms** — on Fastify
+the reply is hijacked first, without which Fastify serialises and ends the stream.
+
+```ts
+@Module({ imports: [AghozModule.forRoot({ maxHistoryBytes: 16 * 1024 * 1024 })] })
+export class AppModule {}
+```
+
+Then write the controller yourself, with your own guards on it:
+
+```ts
+@Controller('events')
+@UseGuards(AuthGuard)
+export class EventsController {
+  private readonly stream: ReturnType<typeof createAghozHandler>
+
+  constructor(@InjectHub() private readonly hub: AghozHub) {
+    // Once, in the constructor — never inside the route method. `revalidateMs` schedules
+    // an interval per handler, so one per request leaks a timer per connection.
+    this.stream = createAghozHandler(hub, {
+      authorize: (req, topic) => topic.startsWith(`org/${req.user.orgId}/`),
+      connectionKey: (req) => req.user.id,
+    })
+  }
+
+  @Get()
+  events(@Req() req: Request, @Res() res: Response) {
+    return this.stream(req, res)
+  }
+
+  @Get('cursor')
+  cursor() {
+    return { cursor: this.hub.cursor() }
+  }
+}
+```
+
+**This package deliberately does not mount a controller for you.** A route it registered
+would carry none of your `@UseGuards()`, and guards are where a Nest application's
+authentication lives — so an auto-mounted stream would be the one route in your app that
+bypassed it. The premise here is that your authentication runs *before* the hub sees a
+request. You write the controller, and your guards run first.
+
+Two things that will bite you:
+
+- Use a bare `@Res()`. `@Res({ passthrough: true })` leaves Nest in charge of ending the
+  response, and it will end it — closing the stream the moment the method returns.
+- Build the handler in the constructor, not in the route method.
+
+Config that is not known at import time — a Redis backplane, whose factory is async — uses
+`forRootAsync`:
+
+```ts
+AghozModule.forRootAsync({
+  imports: [ConfigModule],
+  inject: [ConfigService],
+  useFactory: async (config: ConfigService) => ({
+    backplane: await createRedisBackplane({
+      redis: new Redis(config.get('REDIS_URL')),
+      subscriber: new Redis(config.get('REDIS_URL')),
+    }),
+  }),
+})
+```
+
+The module also closes the hub on `beforeApplicationShutdown`. That hook, rather than
+`onApplicationShutdown`, is load-bearing: Nest closes the HTTP server *between* the two,
+and `server.close()` waits for open connections to end. An SSE stream never ends on its
+own, so a hub still holding subscribers at that point means `app.close()` never resolves.
+
+---
+
+## Observability
+
+`hub.stats()` returns a snapshot of what the hub has done and is doing. It is plain
+data, cheap enough to call on a scrape interval, and safe to `JSON.stringify`.
+
+```js
+const {
+  connections,   // open right now
+  opened,        // streams opened, ever
+  closed,        // { client, 'slow-consumer', revalidated, evicted, 'hub-closed' }
+  rejected,      // { 'bad-request', unauthorized, 'over-capacity', 'authorize-error', unavailable }
+  published,     // events this process published
+  delivered,     // frames written to subscribers — one publish to ten of them counts ten
+  truncated,     // clients told they lost events
+  bufferedBytes, // queued on subscriber sockets right now
+  uptimeMs,
+} = hub.stats()
+```
+
+**The two numbers to alert on** are `truncated` and `closed['slow-consumer']`. Everything
+else describes load; these two describe loss.
+
+- `truncated` climbing means `maxHistoryBytes` is too small for how long your clients
+  actually stay disconnected. Each one is a client that was *told* it missed events —
+  correct behaviour, and the whole point of the protocol, but not something you want a
+  steady rate of.
+- `closed['slow-consumer']` climbing means subscribers cannot keep up with your publish
+  rate and §8.2 is dropping them. `bufferedBytes` is the leading indicator: it rises
+  first, and drops begin when it reaches `maxBufferBytes`.
+
+Every count is monotonic since `createHub`, and `uptimeMs` comes with it, so **rates are
+yours to derive**. Nothing here computes one: any window this library picked would be the
+wrong one for someone, and Prometheus, StatsD and OpenTelemetry all derive rates from
+counters already.
+
+There is deliberately **no metrics endpoint**. This library's premise is that your
+authentication runs before the hub sees a request, and a route mounted by the library
+would be the one thing in it that bypassed yours — connection counts and rejection
+reasons are a description of your traffic. Mount it yourself:
+
+```js
+app.get('/internal/aghoz', requireAdmin, (req, res) => res.json(hub.stats()))
+```
+
+One thing absent: how full the history ring is. That is state the Rust core's C ABI does
+not expose yet, and `truncated` is the metric that actually matters from that region —
+it reports the consequence rather than the cause.
+
+---
+
 ## Packages
 
 | package | what it is |
@@ -360,6 +498,7 @@ buys an ordering that is identical in every process.
 | `@aghoz/react` | React provider and hooks (`useTopic`, `useTopicReducer`). React 18+ peer only. |
 | `@aghoz/react-query` | TanStack Query adapter: topics mapped onto query keys, gaps included. Optional. |
 | `@aghoz/fastify` | Fastify adapter. Optional. |
+| `@aghoz/nest` | NestJS adapter: DI module plus a handler for your own controller. Express and Fastify platforms. Optional. |
 | `@aghoz/redis` | Redis Streams backplane, for multi-process deployments. Optional. |
 
 There is also a Rust protocol core (`core/`) with a C ABI (`abi/`) — see
@@ -516,7 +655,10 @@ core with a C ABI and a Node binding, not shipped.
   `client.reconnect()` alongside it (PROTOCOL.md §4.6), so a long-lived stream re-checks
   authorization rather than inheriting it once at connect and outliving the session that
   permitted it.
-- Observability: connection count, publish rate, lagged-subscriber count.
+- ~~Observability: connection count, publish rate, lagged-subscriber count.~~ —
+  **shipped** as [`hub.stats()`](#observability), with closes attributed by cause and
+  rejections bucketed by cause, because a total filed under the wrong reason sends you
+  after the wrong problem. Counters only; rates are the caller's to derive.
 
 ### v0.3 — more than one runtime
 

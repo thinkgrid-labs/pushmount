@@ -242,6 +242,73 @@ test('replays events newer than the cursor and echoes the checkpoint', async () 
   }
 })
 
+// The quickstart's own path: a page is rendered with `hub.cursor()` alongside its data,
+// then opens the stream with it. On a hub that has just booted that cursor is `0-0`, and
+// `0-0` sorts below every real id — so comparing it against the OLDEST RETAINED event
+// reported a gap to a client that could not possibly have missed anything. Every first
+// page load after a deploy refetched, and the one signal worth trusting cried wolf.
+test('the cold-start cursor 0-0 replays without reporting a gap', async () => {
+  const s = await boot()
+  try {
+    const cold = s.hub.cursor()
+    assert.equal(cold, '0-0')
+    await s.hub.publish('t', 'one')
+    await s.hub.publish('t', 'two')
+
+    const stream = await openStream(s.base, `topics=t&last_event_id=${cold}`)
+    // Nothing was ever evicted, so the cursor is honoured rather than downgraded.
+    assert.equal(stream.res.headers.get('last-event-id-checkpoint'), cold)
+    await stream.waitFor((f) => f.includes('two'))
+    assert.equal(dataFrames(stream.frames).length, 2, 'both events replay')
+    assert.ok(
+      !stream.frames.some((f) => f.startsWith('event: ~gap')),
+      'a hub that has dropped nothing must not claim it has',
+    )
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
+// The mirror image, and the more dangerous one. A frame bigger than the whole budget is
+// evicted by the very push that added it, leaving the ring empty — and an empty ring has
+// no oldest entry to compare against, so a real loss was reported as "nothing missed".
+test('an event too large for the ring is still reported as a gap', async () => {
+  const s = await boot({ maxHistoryBytes: 64 })
+  try {
+    const cold = s.hub.cursor()
+    await s.hub.publish('t', 'x'.repeat(500))
+
+    const stream = await openStream(s.base, `topics=t&last_event_id=${cold}`)
+    assert.equal(stream.res.headers.get('last-event-id-checkpoint'), 'earliest')
+    const gap = await stream.waitFor((f) => f.startsWith('event: ~gap'))
+    assert.equal(JSON.parse(gap.split('data: ')[1]).reason, 'history-truncated')
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
+test('a cursor at the evicted id is not a gap — that event is the one the client holds', async () => {
+  const s = await boot({ maxHistoryBytes: 400 })
+  try {
+    // Frames are ~157 bytes here, so a 400-byte ring holds two: the third publish
+    // evicts `first` and only `first` — exactly the event the client already has.
+    const first = await s.hub.publish('t', 'x'.repeat(120))
+    for (let i = 0; i < 2; i++) await s.hub.publish('t', 'x'.repeat(120))
+
+    const stream = await openStream(s.base, `topics=t&last_event_id=${first.id}`)
+    assert.equal(stream.res.headers.get('last-event-id-checkpoint'), first.id)
+    assert.ok(
+      !stream.frames.some((f) => f.startsWith('event: ~gap')),
+      'everything after the cursor is still retained',
+    )
+    stream.close()
+  } finally {
+    await s.close()
+  }
+})
+
 test('reports earliest in the header AND a ~gap frame when history has moved on', async () => {
   const s = await boot({ maxHistoryBytes: 400 })
   try {

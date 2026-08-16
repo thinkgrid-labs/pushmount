@@ -7,7 +7,7 @@ implementation is a defensible position rather than a slow-motion divergence.
 ## Layout
 
 ```
-vectors.json         the corpus — 50 vectors in five groups
+vectors.json         the corpus — 57 vectors in six groups
 build-vectors.mjs    regenerates vectors.json
 runner.mjs           runs the corpus against any JavaScript implementation
 ```
@@ -35,6 +35,7 @@ The runner exits non-zero and prints expected-vs-actual for every divergence.
 | `origin` | 11 | §6.0 origin validation |
 | `idOrder` | 4 | §2.1 id comparison |
 | `monotonic` | 3 | §2.2 clock-regression handling |
+| `checkpoint` | 7 | §4.4 / §7.1 whether a reconnect is told it missed events |
 
 ## Rules for adding vectors
 
@@ -67,3 +68,12 @@ whose failure message does not tell you what is wrong is worth very little at 3a
   this backwards, and the failure mode is a client silently discarding live events as
   already-seen.
 - **M1** — a backwards system clock must not produce a backwards cursor.
+- **CP7** — an event too large for the whole history budget is evicted by the push that
+  stored it, leaving history empty. An implementation that decides truncation by comparing
+  against the oldest *retained* event has nothing to compare against and reports "nothing
+  missed" for an event it definitely dropped. Silent staleness is the one failure §0 says
+  must never happen, so this is the vector in the group worth keeping honest.
+- **CP1** — the mirror image, and the one that erodes trust rather than data: `0-0` is the
+  cold-start cursor §5 hands out, and it sorts below every real id. Compared against the
+  oldest retained event it reports a gap on every first page load, which teaches people to
+  ignore the signal.
