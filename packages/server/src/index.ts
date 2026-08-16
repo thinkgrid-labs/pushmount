@@ -42,6 +42,13 @@ export type {
   BackplaneReplay,
 } from './backplane.js'
 
+export {
+  createMemoryStore,
+  type HistoryStore,
+  type LoadedHistory,
+  type StoredEvent,
+} from './history.js'
+
 export { createTsCore } from './core-ts.js'
 export { createNativeCore, type NativeModule } from './core-native.js'
 

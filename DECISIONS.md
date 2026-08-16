@@ -5,6 +5,328 @@ Newest first.
 
 ---
 
+## D14 — `hub.cursor()` answers for the sequence, and with a backplane the sequence is shared
+
+**Date:** 16 August 2026 · **Status:** accepted
+
+### A cluster's newest worker was the one that could not answer
+
+`cursor()` returned `core.cursor()` — this process's ring — while `Backplane.cursor()`, the
+shared sequence's own answer, existed and was called by nothing. On a worker that had just
+started, the ring is empty and the reader has delivered nothing:
+
+```
+worker A, up for hours, 2000 events published:  hub.cursor() → 1786884537731-0
+worker B, started just now:                     hub.cursor() → 0-0
+page bootstrapped by B, stream opened with 0-0: truncated, 0 events  → ~gap, full refetch
+```
+
+Every page a fresh worker bootstraps is told it lost the history it never had — for the
+length of a rolling deploy, that is every page. The same false alarm D12 and D13 fixed, let
+in through a third door: not a history that lied, but a *cursor* that described one process
+where the client needs the deployment.
+
+### It was never the dangerous direction, and that decided the fix
+
+A cursor behind the sequence costs replay; one ahead of it costs events. This can only ever
+be behind — every id the core holds came out of the shared log, and with a backplane
+configured there is no local id assignment to overtake it. So the fix does not need to be
+exact, only bounded: **seed the cursor at boot from `backplane.cursor()`**, folded into the
+existing `ready()` promise, which already exists for the same reason and is already awaited
+by the handler. Staleness goes from "everything since this process started" to "the reader's
+round trip", with no IO on the request path and no change to a sync `cursor()` that a dozen
+documented call sites use.
+
+`ready()` therefore never rejects, now that a network call is inside it. A backplane that
+cannot be reached at boot leaves the cursor at `0-0` and the hub serving — a rejection would
+take out every request through the handler that awaits it, to protect one cursor.
+
+### Where exactness is worth a round trip
+
+Two places take it: **`sharedCursor()`**, for a hand-rolled bootstrap that stamps a cursor
+next to data it just read, and **`cursorHandler()`** — §5's own endpoint, which is reached
+for precisely by applications that have not thought about which process is answering.
+
+The residual window the seed leaves is real: an event published on another worker in the
+last millisecond is in your database snapshot before it is in this worker's reader, so a
+client replays it on top of a snapshot that already reflects it. That is a duplicate
+application, not a loss, and it is inherent to any cursor read before its data — which is
+why the choice is documented at the call site rather than decided for everyone.
+
+### PROTOCOL.md §5 was ambiguous, and said so only by implication
+
+"The newest id currently assigned" reads as a per-process claim to anyone implementing the
+endpoint in a language whose deployment is multi-worker by default — which is every adapter
+after Node. Spelled out, with the direction to err in when exactness is not available.
+
+---
+
+## D13 — The Redis backplane cannot answer the loss question from the stream alone, so it keeps one durable fact beside it
+
+**Date:** 16 August 2026 · **Status:** accepted
+
+### The same bug as D12, one level out
+
+D12 fixed the in-process ring. The shared log had the identical hole, and the Redis
+backplane's replay was answering it with the rule §4.4 exists to forbid — comparing the
+cursor against the **oldest retained** entry:
+
+```
+cold start, nothing ever trimmed:  replay('0-0')  →  truncated: true   + 2 events
+stream deleted under the cursor:   replay(id)     →  truncated: false  + 0 events
+```
+
+Both wrong, in opposite directions, and the second is the one that matters: a `DEL`, a key
+expiry, a `maxmemory` eviction, or a failover onto a replica that never received the writes
+all leave the stream with no oldest entry to compare against — and the code read "nothing
+retained means nothing can have been missed from it", so every reconnecting client was told
+it was up to date. Silent staleness, the one failure §0 exists to eliminate, on exactly the
+deployments a backplane exists to serve. The first is merely expensive: a `~gap` on every
+first page load, arriving beside the complete replay that disproves it.
+
+### Why the hub's fix does not port
+
+D6's rule needs the newest **evicted** id. The hub owns its ring and records it on the way
+out. Redis trims implicitly inside `XADD` and reports nothing, so that id is not
+observable, and no amount of reading the stream afterwards recovers it — the entries that
+would name it are the ones that are gone. D12's second rule, `cursor > newest`, does port
+and is carried over unchanged; it is what catches a stream that was rebuilt under the same
+key, or a replica promoted without the tail.
+
+What is left unanswerable is the pair the two failures above turn on: *has anything ever
+been evicted from this stream at all?* That needs one fact the stream does not carry.
+
+### Decision: a floor marker, in Redis, written once
+
+`<key>:floor` — a plain string, `created:<id>` or `adopted:<id>`, `SETNX` so the earliest
+observer's account is the one that stands.
+
+`created` is the load-bearing half, and only a process that found the stream **empty** and
+then wrote its first entry may claim it — checked, not assumed: the id it added must also
+be the oldest the stream holds, so a publish that raced in behind another process records
+`adopted` instead. A `created` floor still equal to the oldest retained entry is the proof
+that nothing has ever been dropped, and it is what licenses echoing `0-0`. `adopted` is
+what any process starting mid-life records, and it vouches for nothing: entries may have
+gone before anyone here was looking.
+
+Costs one round trip on a process's first publish, awaited rather than fired off — a marker
+lost to a failed round trip would leave the stream unable to vouch for itself for the rest
+of its life, and no later publish would know to retry. Reads are free of it in the steady
+state: the marker is read only during replay, beside reads that were already happening.
+
+### What is accepted rather than solved
+
+**A cursor sitting exactly on the last evicted id** is reported as a gap, where §4.4 says to
+echo it. The floor proves that *something* was evicted, never *what*, so the retained edge
+is the only watermark available. It is a one-entry-wide false alarm costing one refetch,
+and over-reporting is the direction to be wrong in.
+
+**A `created` claim can be lost to a race at the stream's birth** — a second process
+constructing inside the ~2 round trips between the first `XADD` and its `SETNX` records
+`adopted`, and the deployment spends the stream's life answering conservatively. Closing it
+needs the marker written before the id it names exists, which is a `Lua` script, which is a
+command the injected-client interface deliberately does not require. Wrong in the safe
+direction, and self-describing when it happens: the key says `adopted`.
+
+**`get`/`setnx` are optional on `RedisLike`.** An adapter without them degrades to
+answering "you may have missed something" in precisely the two cases the marker resolves,
+which is what the interface's whole no-runtime-dependency premise is worth paying for. It
+does not degrade to silence: the `cursor > newest` half needs no marker, so a destroyed
+history is still reported to every client holding a real cursor.
+
+---
+
+## D12 — A restarted hub was silently lying, and persistence is the optimisation on top of the fix
+
+**Date:** 16 August 2026 · **Status:** accepted
+
+### The bug under the roadmap item
+
+v0.4 listed "persistent history — a disk-backed ring, so replay survives a restart" as an
+efficiency item. Probing the behaviour it was meant to improve found something else:
+
+```
+life 1: publish 1786880895872-0, publish 1786880895873-0, process dies
+life 2: client reconnects with last-event-id: 1786880895872-0
+        →  last-event-id-checkpoint: 1786880895872-0
+```
+
+An `echo`. The hub told a resuming client **it had missed nothing**, while the event
+published just before the shutdown was gone for good. That is silent staleness — the one
+failure §0 exists to eliminate — on every restart of every deployment, and it had been
+there since v0.1.
+
+The cause is that D6's rule is one-sided. `truncated = last_trimmed !== null && cursor <
+last_trimmed` asks "did I drop something you had not seen?", and a restarted hub has
+dropped nothing *because it remembers nothing*. An empty ring and a fresh install are
+indistinguishable from the inside.
+
+### The fix, which needs no configuration
+
+A cursor is also unvouchable from the other end: **newer than every id the hub has ever
+issued or recorded.** A hub that has never seen an id that high cannot know what came
+after it, and in normal operation this never fires, because a client's cursor is by
+construction an id this hub handed out.
+
+```
+truncated = evicted || cursor > hub.cursor()
+```
+
+Two lines, in both cores, and it costs nothing. Crucially it leaves D6's false-positive
+protection intact: `0-0` against a hub that has published nothing is still `echo`, because
+`0-0` is not greater than `0-0`. Three vectors pin it — **CP8** (the restart case), **CP9**
+(a cursor exactly at the newest id is not a gap), **CP10** (a real cursor against an empty
+hub). Verified to fail against the old rule first.
+
+One existing test asserted the opposite — *"an empty hub cannot report truncated — there
+is nothing to have lost"*. That is the wrong intuition and it is what hid the bug: an
+empty hub having nothing does not mean the *client* lost nothing, it means the hub cannot
+tell. Rewritten, with the cold-start half kept beside it so the D6 protection stays pinned.
+
+### Persistence, now an optimisation rather than a patch
+
+With the above, a restart is *correct* — every client is told, and refetches. What
+persistence buys is that they do not all have to: a store turns a thundering herd on every
+deploy back into an ordinary replay.
+
+**It cannot live in the core.** The core performs no IO, by enforced invariant, and that
+is what lets one Rust implementation serve every language (D3). So `HistoryStore` sits at
+the handler layer beside `Backplane`, and restores through `core.append` — which exists
+only because the backplane needed the same thing. `@aghoz/history-file` is the file-backed
+implementation, and the tenth package.
+
+**Mutually exclusive with a backplane**, which is refused at construction. A Redis stream
+already *is* a persistent shared history, so a store alongside one would be written to
+forever and never read — durability in appearance only.
+
+### What building it found
+
+**A bounded store creates the same hole one level down.** Compaction throws away the
+oldest events, and the hub's ring knows nothing about a file compacted before boot — so it
+echoed a cursor whose events the store had discarded. Only the store knows, so `load()`
+now returns `{ events, trimmed? }`, and the file store persists that marker as a header
+line in the compacted log because it cannot be recomputed once the lines are gone.
+
+**Honouring that floor required `compareIds` on the seam.** The handler layer had no way
+to compare two ids at all, and §2.1 forbids doing it as strings. Added to `HubCore`, and
+to the C ABI as `ag_compare_ids` (**3200**, minor and additive) — without it a non-Node
+adapter implementing a store would have had to reimplement the one comparison the corpus
+exists to keep identical, which is exactly the trap ADAPTERS.md warns about.
+
+**`close()` cannot be awaited, and a durability feature needs that.** `hub.close()` is
+synchronous by contract and does not await the store, so queued writes were still in
+flight when the process moved on. Rather than make shutdown async and change every caller,
+the store's own `close()` is the documented graceful-shutdown hook — `hub.close(); await
+store.close()` — and double-closing is explicitly safe so that pattern works. Found by a
+test that stat'd the log too early.
+
+**A first version of the file store dropped writes on close**, because the queued
+continuation re-checked a `closed` flag set behind it. Only *new* appends are refused now;
+`close()` drains the queue rather than racing it.
+
+### The tail is deliberately allowed to be lost
+
+The file store does not fsync per event by default, and that is a decision rather than an
+omission: **losing the tail cannot cause silent staleness.** A hub restored from a short
+log has a cursor behind the client's, and the rule above reports that as a gap. Durability
+here buys fewer refetches, never correctness, so paying an fsync per publish to buy nothing
+is the wrong default. `fsync: true` is there for an operational story that wants it anyway.
+
+---
+
+## D11 — The multi-tab leader is whoever holds a Web Lock, not whoever wins an election
+
+**Date:** 16 August 2026 · **Status:** accepted
+
+### The roadmap said BroadcastChannel leader election. It should not.
+
+Five tabs is five connections, five replay scans per reconnect, and five of the browser's
+six HTTP/1.1 slots. Sharing one connection needs two things: a way to decide which tab
+holds it, and a way to fan out. `BroadcastChannel` is right for the second and wrong for
+the first.
+
+A `BroadcastChannel` election is a heartbeat: the leader announces itself on an interval,
+and the others assume it is dead after some timeout. **Both ends of that timeout are
+bad**, and the bad end is worse here than in most products:
+
+- **Too short** and a garbage-collect pause or a backgrounded tab elects a second leader.
+  Two connections, both live, both forwarding — the same event delivered twice from two
+  sockets, which no client-side dedupe fixes because both are legitimately new to
+  somebody.
+- **Too long** and every tab is blind for the timeout after a crash. That is silent
+  staleness — the one failure §0 exists to eliminate — reintroduced by a feature whose
+  entire justification was efficiency.
+
+There is no value of the timeout that avoids both. The choice is which failure to have.
+
+### Decision
+
+**The leader is whoever holds an exclusive Web Lock.** Every tab calls
+`navigator.locks.request(name, { mode: 'exclusive' }, () => new Promise(() => {}))` — a
+callback that never settles, so the lock is held for the tab's lifetime. The browser
+grants it to one, queues the rest, and hands it to the next in line the moment the holder
+goes away, **including on a crash or a force-quit that runs no unload handler.**
+
+So there is no election protocol in this codebase at all. No heartbeat, no timeout, no
+split-brain window, and no promotion code — a queued tab's pending `request` simply
+resolves. `BroadcastChannel` is left doing the one job it is good at: moving frames
+between tabs.
+
+**Where `navigator.locks` is missing, `createSharedClient` throws** rather than falling
+back. Degrading to one connection per tab is correct and boring; degrading to a guessed
+timeout is neither, and a fallback nobody tests is worse than an error message. Web Locks
+is in every browser this library targets.
+
+### Handoff, which is where the correctness actually lives
+
+A promoted tab must not resume from "now" — that loses whatever was published while no tab
+held the stream, with nothing reported. So **every tab tracks the cursor of every
+forwarded event, whether or not it has a handler for that topic.** A tab promoted to
+leader already knows where the shared stream reached and resumes from there; the server
+replays the rest.
+
+Two consequences worth stating:
+
+- **The shared connection is a pure transport.** Its inner `Client` is constructed with a
+  random `originId` no tab uses, so it filters nothing. §6.0's "skip your own echo" is a
+  per-tab decision — a follower's echo has to reach it in order to be skipped *there* —
+  and a leader that filtered in transport would silently deny every other tab an event.
+- **Every tab dedupes.** Not a formality: a tab reloaded a moment ago holds a fresher
+  cursor than a leader open for hours, so the leader's replay forwards events that tab has
+  already applied.
+
+### Verified by breaking it
+
+Four deliberate breaks, each caught by the scenario that should catch it:
+
+| break | caught by |
+|---|---|
+| promoted leader does not resume from the shared cursor | *an event published while no tab holds the stream is replayed* |
+| inner client uses the leader tab's own origin | *the origin skip works when the leader itself is the writer* |
+| leader subscribes to its own topics, not the union | *the leader subscribes to the union* (and the widening test) |
+| followers stop deduping | *a tab further ahead than the leader skips what the leader replays* |
+
+The fourth is the one worth recording, because the first version of that test **did not
+catch it**. It killed a leader and asserted no duplicates, but the promoted tab resumed
+from a cursor the server had nothing newer than, so no duplicate was ever produced and the
+dedupe path went unexercised. A test that cannot fail is not coverage. The replacement
+constructs the situation that genuinely produces one — a follower ahead of its leader.
+
+The handoff test had the mirror problem: it slept 30 ms and published, intending to hit a
+window where no tab held the stream, but promotion usually won that race and the event
+arrived live. It now makes the window deterministic by promoting a tab with no topics,
+which opens no connection at all.
+
+### Also fixed while building it
+
+`SharedClient` opened its `BroadcastChannel` *before* validating `navigator.locks`, so the
+throw left a channel nobody held a reference to and nobody could close — which in Node
+kept the event loop alive forever, and in a browser would leak one per attempt. Order
+reversed. The channel is also `unref`'d where the runtime supports it, matching what the
+client already does for its timers.
+
+---
+
 ## D10 — §8.2 gains a delta-counted backpressure path, reversing an earlier objection
 
 **Date:** 16 August 2026 · **Status:** accepted · **Amends:** the `note_buffer` rationale

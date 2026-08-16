@@ -8,6 +8,7 @@
 
 import {
   Hub,
+  compareIds,
   encodeControl,
   encodeFrame,
   formatId,
@@ -137,6 +138,15 @@ export function createTsCore(config: CoreConfig = {}): HubCore {
 
     deniedFrame(topics) {
       return encodeControl('denied', { topics })
+    },
+
+    compareIds(a, b) {
+      const pa = parseId(a)
+      const pb = parseId(b)
+      if (pa === null || pb === null) {
+        throw new CoreError('malformed-cursor', `malformed id in comparison: ${pa === null ? a : b}`)
+      }
+      return compareIds(pa, pb)
     },
 
     validTopic,

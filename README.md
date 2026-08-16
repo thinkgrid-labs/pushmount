@@ -8,8 +8,8 @@
   <strong>Real-time server push for apps that already have a backend.</strong><br>
   Server-Sent Events (SSE) that mount into your existing app as a route — so your own
   authentication runs first, and per-user authorization is one line.<br>
-  <sub>Node.js today (Express, Fastify, NestJS, React, Vue, Svelte). The protocol core is Rust behind a C ABI,
-  so other languages follow.</sub>
+  <sub><strong>Node.js only</strong> for now — Express, Fastify, NestJS on the server; React, Vue, Svelte in the
+  browser. The protocol core is Rust behind a C ABI, so other languages follow.</sub>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
   <a href="#license"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg"></a>
   <img alt="Node.js 22 or later" src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg">
   <img alt="Zero third-party dependencies" src="https://img.shields.io/badge/third--party%20deps-0-brightgreen.svg">
-  <img alt="Status: pre-release, unpublished" src="https://img.shields.io/badge/status-pre--release-orange.svg">
+  <img alt="Status: early release" src="https://img.shields.io/badge/status-early-orange.svg">
 </p>
 
 ```js
@@ -41,28 +41,26 @@ protocol core behind a C ABI for other languages.
 
 ---
 
-> ### ⚠️ Not finished. Under active development.
+> ### ⚠️ Early. Read this before you depend on it.
 >
-> **Nothing is published.** There are no packages on npm, and the install commands below
-> describe the intended shape rather than something you can run today. Build from source
-> if you want to try it.
+> **Node.js only.** Every package is Node 22+. There is no Python, PHP, Go or Ruby adapter
+> — the Rust core, the C ABI and the two conformance corpora exist so that there can be,
+> and Go is first in line. See [the roadmap](#v05--adapters-in-other-languages).
 >
-> **The API will change without notice**, and so may the wire protocol until it is
-> tagged. There is no deprecation policy yet because there is nothing to deprecate.
+> **The API may still change**, and so may the wire protocol until it is tagged. There is
+> no deprecation policy yet.
 >
 > **The name is settled.** `aghoz` is final — see [DECISIONS.md](./DECISIONS.md) D4. It
 > was held provisionally until there was something to decide it on, which is why the
 > protocol carries the name nowhere and a test still enforces that.
 >
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
-> by a shared [conformance corpus](./conformance/) of 57 vectors that every
-> implementation runs; the packages pass 202 tests plus 33 in Rust (11 of the 202 are
-> backplane tests that skip themselves without a live Redis — CI provides one); and the
-> [example app](./examples/express-react) runs end to end, verified in CI. Every
-> significant decision — including the two that were reversed — is recorded with its
-> evidence in [DECISIONS.md](./DECISIONS.md).
->
-> Please don't build a business on it yet. Do open an issue if you try it.
+> by two shared corpora — [97 vectors](./conformance/) pinning the protocol core and
+> [41 scenarios](./conformance/http/) pinning the HTTP layer over a real socket, both
+> language-neutral. The packages pass 258 tests plus 74 in Rust, the unsafe in the C ABI
+> is verified by Miri, and the [example app](./examples/express-react) runs end to end in
+> CI. Every significant decision — including the three that were reversed — is recorded
+> with its evidence in [DECISIONS.md](./DECISIONS.md).
 
 ---
 
@@ -72,11 +70,12 @@ protocol core behind a C ABI for other languages.
 - [How aghoz compares](#how-aghoz-compares)
 - [Read this before installing](#read-this-before-installing)
 - [What makes it different](#what-makes-it-different)
-- [Quickstart](#quickstart) — [server](#server--three-additions-to-an-app-you-already-have) · [client](#client) · [collections](#collections-need-a-fold-not-a-cell)
+- [Install](#install)
+- [Server setup](#server-setup) — [Express](#express) · [Fastify](#fastify) · [NestJS](#nestjs)
+- [Client setup](#client-setup) — [React](#react) · [Vue 3](#vue-3) · [Svelte](#svelte) · [anything else](#everything-else) · [TanStack Query](#with-tanstack-query)
 - [Things that will bite you](#things-that-will-bite-you)
 - [Multiple processes (Redis backplane)](#multiple-processes-redis-backplane)
-- [Vue and Svelte](#vue-and-svelte)
-- [NestJS](#nestjs)
+- [Multiple tabs (one shared connection)](#multiple-tabs-one-shared-connection)
 - [Observability](#observability)
 - [Packages](#packages)
 - [Why Rust?](#why-rust)
@@ -205,19 +204,56 @@ whole system in ten minutes.
 
 ---
 
-## Quickstart
+## Install
 
+**Node only.** Every package here runs on Node 22+, and there is no adapter for any other
+language yet — the C ABI and the two conformance corpora exist so that there can be, and
+Go is first in line. See [the roadmap](#v05--adapters-in-other-languages).
+
+Pick the server adapter for your framework and the client binding for your UI. Everything
+else is optional.
+
+```sh
+# server — one of these
+pnpm add @aghoz/server                 # Express, or plain node:http
+pnpm add @aghoz/server @aghoz/fastify  # Fastify
+pnpm add @aghoz/server @aghoz/nest     # NestJS
+
+# client — one of these
+pnpm add @aghoz/client @aghoz/react    # React
+pnpm add @aghoz/client @aghoz/vue      # Vue 3
+pnpm add @aghoz/client @aghoz/svelte   # Svelte 4 or 5
+pnpm add @aghoz/client                 # anything else
+
+# optional
+pnpm add @aghoz/react-query            # TanStack Query adapter
+pnpm add @aghoz/redis                  # more than one process
+pnpm add @aghoz/history-file           # replay that survives a restart
 ```
-pnpm add @aghoz/server @aghoz/client @aghoz/react
-```
 
-*(Not yet published — see the notice above. For now: clone, `pnpm install`, `pnpm -r build`.)*
+`@aghoz/server` and `@aghoz/client` have **zero runtime dependencies**. The framework
+packages take yours as a peer and add nothing.
 
-### Server — three additions to an app you already have
+---
+
+## Server setup
+
+Three steps in every framework, and the second and third are identical everywhere:
+
+1. **Create a hub** and mount the stream **after** your authentication middleware.
+2. **Publish** from the write path you already have.
+3. **Hand the page a cursor** with its initial data, which closes the cold-start window.
+
+Mount order is the entire security model. Everything above the mount has already run, so
+`req.user` exists and `authorize` never has to parse a token.
+
+### Express
 
 ```js
+import express from 'express'
 import { createHub } from '@aghoz/server'
 
+const app = express()
 const hub = createHub()
 
 app.use(session())        // already there
@@ -226,7 +262,7 @@ app.use(loadUser)         // already there — sets req.user
 // 1. mount the stream, AFTER your auth middleware
 app.get('/events', hub.handler({
   authorize: (req, topic) => topic.startsWith(`org/${req.user.orgId}/`),
-  connectionKey: (req) => req.user.id,     // caps connections per user
+  connectionKey: (req) => req.user.id,     // §10 — caps connections per user
 }))
 app.get('/events/cursor', hub.cursorHandler())
 
@@ -237,20 +273,162 @@ app.post('/api/orders', async (req, res) => {
   hub.publish(`org/${req.user.orgId}/orders`, order)
 })
 
-// 3. hand the page a cursor with its data — see "the cold-start window" below
+// 3. hand the page a cursor alongside its data
 app.get('/api/bootstrap', (req, res) => {
   res.json({ orders: recentOrders, cursor: hub.cursor() })
 })
 ```
 
-Mount order is the entire security model. Everything above the mount has already run, so
-`req.user` exists and `authorize` never has to parse a token.
+Plain `node:http` is the same — `hub.handler()` takes `(req, res)` and expects nothing
+Express-specific.
 
-### Client
+### Fastify
+
+`registerAghoz` mounts both routes and handles the two Fastify-specific details for you.
+
+```js
+import Fastify from 'fastify'
+import { createHub } from '@aghoz/server'
+import { registerAghoz } from '@aghoz/fastify'
+
+const app = Fastify()
+const hub = createHub()
+
+await app.register(authPlugin)   // already there — decorates request.user
+
+// 1. mount. `${path}/cursor` is registered alongside it.
+await registerAghoz(app, {
+  hub,
+  path: '/events',
+  authorize: (req, topic) => topic.startsWith(`org/${req.user.orgId}/`),
+  connectionKey: (req) => req.user.id,
+})
+
+// 2. publish
+app.post('/api/orders', async (req, reply) => {
+  const order = await db.orders.insert(req.body)
+  hub.publish(`org/${req.user.orgId}/orders`, order)
+  return order
+})
+
+// 3. bootstrap
+app.get('/api/bootstrap', async () => ({ orders: recentOrders, cursor: hub.cursor() }))
+```
+
+Two things the adapter does that you would otherwise have to know about. It calls
+`reply.hijack()`, without which Fastify assumes it owns the response, serialises it and
+truncates the stream. And it passes `toNodeRequest: (req) => req.raw`, because Fastify
+keeps decorations like `request.user` on its own wrapper while the socket and its close
+events live on the raw request — `authorize` needs the first, the connection lifecycle
+needs the second.
+
+Wiring the routes yourself instead? Use `toFastifyHandler(options)`.
+
+### NestJS
+
+**Nest's own `@Sse()` decorator cannot be used**, and that is why this package exists.
+`@Sse()` takes an Observable and writes the response itself — it owns the status, the
+headers and the framing, and offers no way to add one of your own. So the
+`last-event-id-checkpoint` header (§4.4) is unreachable and a client can never be told it
+missed events, which is the whole point of the library.
+
+Works on **both the Express and Fastify platforms**.
+
+```ts
+// 1a. register the module
+@Module({ imports: [AghozModule.forRoot({ maxHistoryBytes: 16 * 1024 * 1024 })] })
+export class AppModule {}
+```
+
+```ts
+// 1b. write the controller yourself, with your own guards on it
+@Controller('events')
+@UseGuards(AuthGuard)
+export class EventsController {
+  private readonly stream: ReturnType<typeof createAghozHandler>
+
+  constructor(@InjectHub() private readonly hub: AghozHub) {
+    // Once, in the constructor — never inside the route method. `revalidateMs` schedules
+    // an interval per handler, so one per request leaks a timer per connection.
+    this.stream = createAghozHandler(hub, {
+      authorize: (req, topic) => topic.startsWith(`org/${req.user.orgId}/`),
+      connectionKey: (req) => req.user.id,
+    })
+  }
+
+  @Get()
+  events(@Req() req: Request, @Res() res: Response) {
+    return this.stream(req, res)
+  }
+
+  @Get('cursor')
+  async cursor() {
+    return { cursor: await this.hub.sharedCursor() }
+  }
+}
+```
+
+```ts
+// 2. publish from a service
+@Injectable()
+export class OrdersService {
+  constructor(@InjectHub() private readonly hub: AghozHub) {}
+
+  async create(orgId: string, input: CreateOrderDto) {
+    const order = await this.repo.save(input)
+    this.hub.publish(`org/${orgId}/orders`, order)
+    return order
+  }
+}
+```
+
+**This package deliberately does not mount a controller for you.** A route it registered
+would carry none of your `@UseGuards()`, and guards are where a Nest application's
+authentication lives — so an auto-mounted stream would be the one route in your app that
+bypassed it.
+
+Three things that will bite you:
+
+- Use a **bare `@Res()`**. `@Res({ passthrough: true })` leaves Nest in charge of ending
+  the response, and it will end it — closing the stream the moment the method returns.
+- Build the handler **in the constructor**, not in the route method.
+- Config that is not known at import time — a Redis backplane, whose factory is async —
+  uses `forRootAsync`:
+
+```ts
+AghozModule.forRootAsync({
+  imports: [ConfigModule],
+  inject: [ConfigService],
+  useFactory: async (config: ConfigService) => ({
+    backplane: await createRedisBackplane({
+      redis: new Redis(config.get('REDIS_URL')),
+      subscriber: new Redis(config.get('REDIS_URL')),
+    }),
+  }),
+})
+```
+
+The module also closes the hub on `beforeApplicationShutdown`. That hook, rather than
+`onApplicationShutdown`, is load-bearing: Nest closes the HTTP server *between* the two,
+and `server.close()` waits for open connections to end. An SSE stream never ends on its
+own, so a hub still holding subscribers at that point means `app.close()` never resolves.
+
+---
+
+## Client setup
+
+Two steps everywhere: **provide a connection once at the root**, then **read a topic
+where you render**. One connection serves the whole app however many topics it carries.
+
+Wire `onGap` to a refetch. It is what makes stale state impossible rather than unlikely,
+and it is the reason to use this over fifteen lines of hand-rolled SSE.
+
+### React
 
 ```jsx
-import { AghozProvider, useTopic } from '@aghoz/react'
+import { AghozProvider, useTopic, useTopicReducer } from '@aghoz/react'
 
+// 1. provide once, at the root
 <AghozProvider
   url="/events"
   initialCursor={boot.cursor}
@@ -261,6 +439,7 @@ import { AghozProvider, useTopic } from '@aghoz/react'
 ```
 
 ```jsx
+// 2. read where you render
 function Revenue({ initial }) {
   const revenue = useTopic(`org/${orgId}/revenue`, initial)
   return <strong>{format(revenue)}</strong>
@@ -277,6 +456,78 @@ The migration this replaces:
 + const data = useTopic(`org/${orgId}/revenue`, initial)
 ```
 
+Also available: `useTopicEffect` for a side effect per event, `useConnectionState` for a
+status indicator, and `useAghoz` for the client itself.
+
+### Vue 3
+
+Provide once in a root `setup()`, then use composables anywhere below it.
+
+```vue
+<script setup>
+import { provideAghoz, useTopic, useTopicReducer } from '@aghoz/vue'
+
+// 1. provide once
+provideAghoz({ url: '/events', initialCursor: props.cursor, onGap: () => refetch() })
+
+// 2. read. The topic may be a ref or a getter; changing it resubscribes.
+const revenue = useTopic('org/42/revenue', 0)
+const orders = useTopicReducer('org/42/orders', (list, order) => [...list, order], [])
+</script>
+```
+
+The returned ref is **shallow**, deliberately. A deep one would wrap every payload in a
+reactive proxy, so an object you published would not be `===` the object you receive and
+any identity check downstream would silently stop working. Payloads arrive whole and are
+replaced whole; there is nothing for deep reactivity to do but cost.
+
+### Svelte
+
+Set the client in context once, then use stores.
+
+```svelte
+<script>
+  import { setAghozClient, topic, topicReducer } from '@aghoz/svelte'
+  export let cursor
+
+  // 1. set once
+  setAghozClient({ url: '/events', initialCursor: cursor, onGap: () => refetch() })
+
+  // 2. read
+  const total = topic('org/42/revenue', 0)
+</script>
+
+<p>{$total}</p>
+```
+
+These are `svelte/store` readables rather than runes. One package therefore covers Svelte
+4 and 5 with no compiler step and no rune syntax pinning it to a major version — and the
+lifetime comes free: a readable starts on its first subscriber and tears down after its
+last, so `$total` auto-subscription *is* the subscription lifecycle. Nothing to clean up,
+and no leak when a component is destroyed.
+
+### Everything else
+
+`@aghoz/client` is framework-agnostic and is what the three packages above are built on.
+
+```js
+import { createClient } from '@aghoz/client'
+
+const client = createClient({
+  url: '/events',
+  initialCursor: boot.cursor,
+  onGap: () => refetch(),
+})
+
+const off = client.subscribe('org/42/orders', (data, meta) => {
+  render(JSON.parse(data), meta.id)
+})
+```
+
+Every function in the Vue and Svelte packages also accepts an explicit `client`, which is
+what makes them usable outside a component — in a plain module, or a test, where
+injection and Svelte context cannot be read.
+
 ### Collections need a fold, not a cell
 
 `useTopic` is a last-value cell. It is right for a dashboard number or a status, and
@@ -290,6 +541,27 @@ const orders = useTopicReducer(
 )
 ```
 
+`topicReducer` in Svelte and `useTopicReducer` in Vue are the same idea.
+
+### With TanStack Query
+
+Keep React Query for fetching and cache management; delete the interval and let the
+stream invalidate.
+
+```jsx
+import { useTopicInvalidation, useTopicQueryData } from '@aghoz/react-query'
+
+// The refetchInterval replacement — ignores the payload, so no push shape has to match
+// the endpoint's.
+useTopicInvalidation(`org/${orgId}/orders`, ['orders'])
+
+// Or fold events straight into the cache, with no refetch at all.
+useTopicQueryData(`org/${orgId}/orders`, ['orders'], (list = [], order) => [order, ...list])
+```
+
+Both register for gaps and invalidate on one, because a folded cache is only correct
+while every event was seen.
+
 ---
 
 ## Things that will bite you
@@ -298,7 +570,18 @@ const orders = useTopicReducer(
 stream, anything published is lost — and without a cursor, *nothing reports it*. This is
 on every first page load. Pass `hub.cursor()` alongside your initial data and hand it
 back as `initialCursor`. It is two lines and it closes the only hole in the gap-detection
-story.
+story. With a backplane, `hub.cursor()` is this process's view of the shared sequence —
+correct from boot once you have awaited `hub.ready()`, and behind it afterwards by at
+most the reader's round trip. `await hub.sharedCursor()` pays a round trip to close that
+last gap exactly; reach for it if replaying an event your snapshot already reflects is
+not idempotent for your client.
+
+**A restart makes every connected client refetch.** The hub's history is in memory, so a
+restarted process cannot vouch for a resuming client's cursor — it says so, the client
+gets a gap, and it refetches. That is correct, and on a busy deploy it is also every
+client at once. `@aghoz/history-file` turns it back into an ordinary replay for a
+single-process deployment; a Redis backplane already does, because a Redis stream is a
+persistent shared history.
 
 **`publish` is not transactional with your database write.** A crash between the two
 loses the event with no record that it existed. Every product in this category behaves
@@ -307,12 +590,13 @@ event, you need a transactional outbox.
 
 **Your service worker can buffer the stream.** A worker doing
 `respondWith(fetch(event.request))` defeats every header the server sets, without
-touching your server. If the quickstart hangs and you have a service worker, that is
+touching your server. If your stream hangs and you have a service worker, that is
 where to look first.
 
 **HTTP/1.1 costs one of six connections per origin.** One connection per tab, so this is
 rarely fatal, but it disappears entirely under HTTP/2 — worth having on before you
-measure anything.
+measure anything. If your users keep many tabs open,
+[`createSharedClient`](#multiple-tabs-one-shared-connection) reduces all of them to one.
 
 **Adding a topic reconnects.** There is no client-to-server channel by design, so a
 changed topic set means a new connection carrying the current cursor. Mounts inside one
@@ -348,147 +632,70 @@ discarding a real event as already-seen. The stream doubles as the shared histor
 is what lets a client reconnect to a *different* pod and still be told truthfully
 whether it missed anything. Pub/sub would give fan-out and nothing else.
 
-One consequence worth knowing: with a backplane, your own process's publishes also
-travel through Redis before reaching your own subscribers. That costs a round trip and
-buys an ordering that is identical in every process.
+Two consequences worth knowing.
+
+**Your own publishes travel through Redis** before reaching your own subscribers. That
+costs a round trip and buys an ordering that is identical in every process.
+
+**The cursor becomes a shared quantity.** `hub.cursor()` answers for the shared sequence,
+not for what this worker has happened to see — a worker that has just joined the cluster
+would otherwise stamp `0-0` on every page it bootstraps and have the stream answer with a
+gap. Await `hub.ready()` at boot so a request served in the first milliseconds gets it
+too, and use `await hub.sharedCursor()` (or the `/cursor` endpoint, which does this for
+you) where you want the shared log's own answer rather than this process's view of it.
+
+**A second, tiny key sits beside the stream** — `aghoz:events:floor` by default. It records
+the id the stream began with, written once and never again. Redis trims on `XADD` without
+saying what it dropped, so the stream alone cannot answer "was anything evicted from in
+front of this cursor?" — and answering it from the oldest *retained* entry is wrong in both
+directions: it reports a gap to every cold page load of a stream that has never trimmed,
+and reports none at all once the stream is gone entirely. Delete the two keys together; a
+stream rebuilt under a name whose floor was deleted can no longer vouch for itself, and
+answers conservatively.
 
 ---
 
-## Vue and Svelte
+## Multiple tabs (one shared connection)
 
-Both are thin wrappers over `@aghoz/client`: one connection for the app, and a reactive
-value where you render. Neither restates a protocol decision — gap detection, replay and
-the cursor all belong to the client.
+Skip this if your users keep one tab open. Nothing below is needed and nothing above
+changes.
 
-**Vue 3** (`@aghoz/vue`) — provide once in a root `setup()`, then use composables:
+Five tabs is five connections, five replay scans on every reconnect, and five of the
+browser's six HTTP/1.1 slots. `createSharedClient` gives them one connection between them:
 
-```vue
-<script setup>
-import { provideAghoz, useTopicReducer } from '@aghoz/vue'
+```js
+import { createSharedClient } from '@aghoz/client'
 
-provideAghoz({ url: '/events', initialCursor: props.cursor, onGap: () => refetch() })
-
-// The topic may be a ref or a getter; changing it resubscribes.
-const orders = useTopicReducer('org/42/orders', (list, order) => [...list, order], [])
-</script>
-```
-
-The returned ref is **shallow**, deliberately. A deep one would wrap every payload in a
-reactive proxy, so an object you published would not be `===` the object you receive and
-any identity check downstream would silently stop working. Payloads arrive whole and are
-replaced whole; there is nothing for deep reactivity to do but cost.
-
-**Svelte** (`@aghoz/svelte`) — set the client in context, then use stores:
-
-```svelte
-<script>
-  import { setAghozClient, topic } from '@aghoz/svelte'
-  export let cursor
-
-  setAghozClient({ url: '/events', initialCursor: cursor, onGap: () => refetch() })
-  const total = topic('org/42/revenue', 0)
-</script>
-
-<p>{$total}</p>
-```
-
-These are `svelte/store` readables rather than runes. One package therefore covers Svelte
-4 and 5 with no compiler step and no rune syntax pinning it to a major version — and the
-lifetime comes free: a readable starts on its first subscriber and tears down after its
-last, so `$total` auto-subscription *is* the subscription lifecycle. Nothing to clean up,
-and no leak when a component is destroyed.
-
-Every function in both packages accepts an explicit `client`, which is what makes them
-usable outside a component — in a plain module, or a test, where injection and Svelte
-context cannot be read.
-
----
-
-## NestJS
-
-```sh
-npm install @aghoz/nest
-```
-
-**Nest's own `@Sse()` decorator cannot be used, and that is why this package exists.**
-`@Sse()` takes an Observable and writes the response itself — it owns the status, the
-headers and the framing, and offers no way to add one of your own. So
-`last-event-id-checkpoint` (§4.4) is unreachable, and a client can never be told it missed
-events. That is the whole point of the library, and it is the same reason
-[the client avoids `EventSource`](#why-the-client-is-not-built-on-eventsource).
-
-The adapter takes the response over with `@Res()` instead, which puts Nest in
-library-specific mode. It works on **both the Express and Fastify platforms** — on Fastify
-the reply is hijacked first, without which Fastify serialises and ends the stream.
-
-```ts
-@Module({ imports: [AghozModule.forRoot({ maxHistoryBytes: 16 * 1024 * 1024 })] })
-export class AppModule {}
-```
-
-Then write the controller yourself, with your own guards on it:
-
-```ts
-@Controller('events')
-@UseGuards(AuthGuard)
-export class EventsController {
-  private readonly stream: ReturnType<typeof createAghozHandler>
-
-  constructor(@InjectHub() private readonly hub: AghozHub) {
-    // Once, in the constructor — never inside the route method. `revalidateMs` schedules
-    // an interval per handler, so one per request leaks a timer per connection.
-    this.stream = createAghozHandler(hub, {
-      authorize: (req, topic) => topic.startsWith(`org/${req.user.orgId}/`),
-      connectionKey: (req) => req.user.id,
-    })
-  }
-
-  @Get()
-  events(@Req() req: Request, @Res() res: Response) {
-    return this.stream(req, res)
-  }
-
-  @Get('cursor')
-  cursor() {
-    return { cursor: this.hub.cursor() }
-  }
-}
-```
-
-**This package deliberately does not mount a controller for you.** A route it registered
-would carry none of your `@UseGuards()`, and guards are where a Nest application's
-authentication lives — so an auto-mounted stream would be the one route in your app that
-bypassed it. The premise here is that your authentication runs *before* the hub sees a
-request. You write the controller, and your guards run first.
-
-Two things that will bite you:
-
-- Use a bare `@Res()`. `@Res({ passthrough: true })` leaves Nest in charge of ending the
-  response, and it will end it — closing the stream the moment the method returns.
-- Build the handler in the constructor, not in the route method.
-
-Config that is not known at import time — a Redis backplane, whose factory is async — uses
-`forRootAsync`:
-
-```ts
-AghozModule.forRootAsync({
-  imports: [ConfigModule],
-  inject: [ConfigService],
-  useFactory: async (config: ConfigService) => ({
-    backplane: await createRedisBackplane({
-      redis: new Redis(config.get('REDIS_URL')),
-      subscriber: new Redis(config.get('REDIS_URL')),
-    }),
-  }),
+const client = createSharedClient({
+  url: '/events',
+  initialCursor: boot.cursor,
+  onGap: () => queryClient.invalidateQueries(),
 })
 ```
 
-The module also closes the hub on `beforeApplicationShutdown`. That hook, rather than
-`onApplicationShutdown`, is load-bearing: Nest closes the HTTP server *between* the two,
-and `server.close()` waits for open connections to end. An SSE stream never ends on its
-own, so a hub still holding subscribers at that point means `app.close()` never resolves.
+It is a drop-in for `createClient` — same `subscribe`, same `onGap`, same `originId` — so
+`@aghoz/react`, `@aghoz/vue` and `@aghoz/svelte` take it unchanged.
 
----
+**The leader is whoever holds a Web Lock**, which is the whole election. Every tab
+requests the same exclusive lock and never releases it; the browser grants it to one and
+hands it to the next in line the instant that tab dies, crash included. There is no
+heartbeat and no timeout, because a heartbeat has to pick one and both ends are bad: too
+short and a background tab's GC pause elects a second leader delivering everything twice,
+too long and every tab is blind for the timeout after a crash — which is exactly the
+silent staleness the rest of this library exists to prevent.
+
+A promoted tab resumes the stream where it left off. Every tab tracks the cursor of every
+event the leader forwards, whether or not it has a handler for that topic, so a handoff
+replays what was missed instead of restarting from now.
+
+Two things to know:
+
+- **It throws where `navigator.locks` is missing**, instead of falling back. Use
+  `createClient` per tab there — more connections, still correct. A guessed timeout would
+  not be.
+- **Give each hub its own `name`** if you mount more than one. Two hubs have different
+  topics and different authorization, and must not share a connection. Defaults to the
+  url, which is right for a single mount.
 
 ## Observability
 
@@ -545,7 +752,7 @@ it reports the consequence rather than the cause.
 | package | what it is |
 |---|---|
 | `@aghoz/server` | The in-process hub and the HTTP handler for Express and Node. Zero dependencies. |
-| `@aghoz/client` | Framework-agnostic browser client. Zero dependencies. |
+| `@aghoz/client` | Framework-agnostic browser client, including `createSharedClient` for one connection across every tab. Zero dependencies. |
 | `@aghoz/react` | React provider and hooks (`useTopic`, `useTopicReducer`). React 18+ peer only. |
 | `@aghoz/react-query` | TanStack Query adapter: topics mapped onto query keys, gaps included. Optional. |
 | `@aghoz/vue` | Vue 3 composables (`useTopic`, `useTopicReducer`). Vue 3.3+ peer only. |
@@ -553,6 +760,7 @@ it reports the consequence rather than the cause.
 | `@aghoz/fastify` | Fastify adapter. Optional. |
 | `@aghoz/nest` | NestJS adapter: DI module plus a handler for your own controller. Express and Fastify platforms. Optional. |
 | `@aghoz/redis` | Redis Streams backplane, for multi-process deployments. Optional. |
+| `@aghoz/history-file` | Disk-backed history, so replay survives a restart. Single-process only — a backplane already is one. Optional. |
 
 There is also a Rust protocol core (`core/`) with a C ABI (`abi/`) — see
 [Why Rust?](#why-rust).
@@ -719,11 +927,14 @@ core with a C ABI and a Node binding, not shipped.
 
 ### v0.3 — the adapter foundation
 
-The Rust core and the C ABI are the shared half of a language port. This milestone is
-about the *other* half — and the honest accounting is that the two halves are the same
-size. The core is ~915 lines and every one of them is pinned by the conformance corpus;
-the HTTP layer above it is ~950 lines and the corpus does not reach a single one. Until
-that changes, "a binding rather than a rewrite" is a claim about half the work.
+**Complete.** The Rust core and the C ABI are the shared half of a language port; this
+milestone was about the *other* half, because the two halves are the same size. The core
+is ~915 lines and every one of them was already pinned by the conformance corpus, while
+the HTTP layer above it is ~950 lines and the corpus reached none of it — so "a binding
+rather than a rewrite" was a claim about half the work. Both ABI holes are closed, both
+halves now have a corpus, and the porting contract is written down.
+
+Proving it in a second language is v0.5.
 
 - ~~**`ADAPTERS.md`** — the porting contract.~~ — **Shipped** as
   [ADAPTERS.md](./ADAPTERS.md). §4 states its requirements as MUSTs; what it does not state
@@ -759,25 +970,44 @@ that changes, "a binding rather than a rewrite" is a claim about half the work.
   abort mid-replay, a deliberate drop whose recorded cause must not be `client`. The clock
   is pinned so frames compare byte-for-byte. Each scenario was confirmed to fail against a
   deliberately broken handler before it was allowed to pass.
-- **Go via cgo, as the proof.** Not for Go adoption — because Go is the only candidate not
-  gated behind the backplane work above (one process, goroutines, no shared log needed to
-  be honest), so it is the cheapest way to discover that the checklist is wrong somewhere.
-  Better found here than in a stranger's issue tracker.
-
-Postgres `LISTEN`/`NOTIFY`, for teams who do not want Redis, belongs in this era too. It
-will need its own sequencer, since Postgres has no equivalent of `XADD`'s id.
 
 ### v0.4 — the browser side
 
-- **Multi-tab connection sharing** via `BroadcastChannel` leader election. Five tabs is
-  currently five connections and five replay scans; one tab holding the stream and
-  fanning out fixes it.
-- Persistent history — a disk-backed ring, so replay survives a restart.
+- ~~**Multi-tab connection sharing** via `BroadcastChannel` leader election.~~ —
+  **Shipped** as `createSharedClient` (DECISIONS.md D11), though not by election. The
+  leader is whoever holds an exclusive **Web Lock**, and `BroadcastChannel` is left doing
+  only the fan-out. A heartbeat election has to pick a liveness timeout and both ends are
+  bad: too short and a GC pause elects a second leader, so the same event arrives twice
+  from two sockets; too long and every tab is blind for the timeout after a crash, which
+  is the silent staleness this library exists to remove. A Web Lock has neither failure —
+  the browser reclaims it the moment the holding tab dies, crash included — so there is no
+  election protocol here at all. Five tabs, one connection. A promoted tab resumes from the
+  cursor it learned by watching, because every tab tracks every forwarded event whether or
+  not it has a handler for that topic; without that a handoff would lose whatever was
+  published in between, silently.
+- ~~Persistent history — a disk-backed ring, so replay survives a restart.~~ — **Shipped**
+  as `@aghoz/history-file` (DECISIONS.md D12), but the item turned out to be hiding a bug.
+  A restarted hub had an empty ring and nothing trimmed, so it answered **"you missed
+  nothing"** to every client resuming across the restart — silent staleness, since v0.1.
+  Fixed first, and without configuration: a cursor *newer than every id the hub has ever
+  issued* came from somewhere this hub has never been, and is now reported as a gap
+  (vectors CP8–CP10). With that correct, a store is what it was always meant to be — an
+  optimisation, turning a thundering-herd refetch on every deploy back into an ordinary
+  replay. It cannot live in the core, which performs no IO by enforced invariant, so it
+  sits beside the backplane and restores through `core.append`.
 
 ### v0.5 — adapters in other languages
 
-Only once v0.3 lands is any of this a claim that can be supported.
+v0.3 built the foundation. This is where it gets tested by something other than the
+implementation it was derived from.
 
+- **Go via cgo, first — as the proof, not for Go adoption.** Go is the only candidate not
+  gated behind a backplane: one process, goroutines, no shared log needed to be honest
+  about what it dropped. That makes it the cheapest way to discover that
+  [ADAPTERS.md](./ADAPTERS.md)'s checklist is wrong somewhere, and it was derived from a
+  single implementation, so it is wrong somewhere. Better found here than in a stranger's
+  issue tracker. Done when the Go adapter passes 94/94 vectors and all 41 HTTP scenarios
+  with no change to either corpus.
 - **Python, on FastAPI/Starlette**, as the first officially maintained non-Node adapter.
   Worth separating from "Python support": Uvicorn holds a connection cheaply, while Flask
   on WSGI ties up a synchronous worker for the life of every reader — ten readers is ten
@@ -798,6 +1028,11 @@ Only once v0.3 lands is any of this a claim that can be supported.
   each adapter reports the version it passes, and the README carries an adapter table —
   runtime, corpus version, HTTP suite status — which is also the honest place to say which
   ones are maintained here and which are merely listed.
+
+Postgres `LISTEN`/`NOTIFY`, for teams who do not want Redis, belongs in this era too — not
+because it is adapter work, but because the runtimes arriving here deploy multi-worker by
+default and a second backplane widens who can adopt one. It will need its own sequencer,
+since Postgres has no equivalent of `XADD`'s id.
 
 Adapters stay in-tree until at least two non-Node ones exist. ABI and corpus churn is
 fastest when one commit can change all of it and CI runs everything.

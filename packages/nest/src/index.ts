@@ -232,8 +232,10 @@ export interface AghozHandlerOptions<Req> {
  *   }
  *
  *   @Get('cursor')
- *   cursor() {
- *     return { cursor: this.hub.cursor() }
+ *   async cursor() {
+ *     // §5 — `sharedCursor()` because a worker that has just joined a cluster has read
+ *     // nothing yet, and `cursor()` would answer for this process rather than the log.
+ *     return { cursor: await this.hub.sharedCursor() }
  *   }
  * }
  * ```

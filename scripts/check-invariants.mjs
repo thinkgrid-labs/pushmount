@@ -181,6 +181,78 @@ check('every HTTP scenario carries a description and does something', () => {
 })
 
 // ---------------------------------------------------------------------------
+check('the adapter guide points at files that still exist', () => {
+  // ADAPTERS.md tells a porter which files to copy and which to ignore. That table is
+  // prose, and prose drifts: rename `hub.ts` or move the test app and the guide quietly
+  // starts directing contributors at nothing. Nothing else would catch it, because no
+  // test imports a document.
+  const guide = read('ADAPTERS.md')
+  const start = guide.indexOf('## Reading the reference implementation')
+  if (start === -1) {
+    throw new Error('ADAPTERS.md has lost its "Reading the reference implementation" section')
+  }
+  // Bounded to the section, not "to the end of the file" — later sections name the two
+  // corpora, and sweeping those in makes this check fail on files that are not the
+  // subject of the table at all.
+  const end = guide.indexOf('\n## ', start + 1)
+  const table = guide.slice(start, end === -1 ? undefined : end)
+
+  // Derived from the document rather than listed here, so a row added later is checked
+  // without anyone remembering to update this script.
+  const paths = [...new Set(table.match(/`[\w./-]+\.(?:ts|mjs|rs|json|md)`/g) ?? [])].map((m) =>
+    m.slice(1, -1),
+  )
+  if (paths.length < 5) {
+    throw new Error(`only ${paths.length} file references found — the table has lost rows`)
+  }
+
+  const missing = paths.filter((p) => {
+    try {
+      // Bare filenames appear in the "do not copy" row alongside a full path; resolve
+      // them against the package that row is about.
+      return !statSync(join(ROOT, p.includes('/') ? p : `packages/server/src/${p}`)).isFile()
+    } catch {
+      return true
+    }
+  })
+  if (missing.length > 0) {
+    throw new Error(`ADAPTERS.md points at files that do not exist: ${missing.join(', ')}`)
+  }
+
+  // The guide tells porters to follow the checklist through these markers. If one is
+  // renamed the instruction is unfollowable.
+  const handler = read('packages/server/src/create-hub.ts')
+  const markers = ['---- §4.1 parse', '---- §4.3 authorize', '---- §4.5 the atomic block']
+  const gone = markers.filter((m) => !handler.includes(m))
+  if (gone.length > 0) {
+    throw new Error(`create-hub.ts has lost the section markers ADAPTERS.md cites: ${gone.join(', ')}`)
+  }
+
+  return `${paths.length} files, ${markers.length} section markers`
+})
+
+// ---------------------------------------------------------------------------
+check('every scenario the adapter guide cites exists in the corpus', () => {
+  // The checklist links each rule to the scenario that catches it. A citation pointing at
+  // a scenario that was renamed or dropped is worse than no citation: it tells a porter
+  // the rule is enforced when nothing enforces it.
+  const cited = [...new Set(read('ADAPTERS.md').match(/\bH\d+\b/g) ?? [])]
+  if (cited.length === 0) throw new Error('ADAPTERS.md cites no scenarios — the links have been lost')
+
+  const corpus = json('conformance/http/scenarios.json')
+  const known = new Set(
+    Object.values(corpus)
+      .filter(Array.isArray)
+      .flatMap((group) => group.map((s) => s.id)),
+  )
+  const dangling = cited.filter((id) => !known.has(id))
+  if (dangling.length > 0) {
+    throw new Error(`ADAPTERS.md cites scenarios that no longer exist: ${dangling.join(', ')}`)
+  }
+  return `${cited.length} of ${known.size} scenarios cited`
+})
+
+// ---------------------------------------------------------------------------
 check('the README states the exclusions before the install line', () => {
   // Serverless and multi-process are the two ways someone wastes an afternoon before
   // discovering this is the wrong tool. They belong above the fold, permanently.

@@ -9,9 +9,16 @@ headers, ordering, teardown — which is not portable and should not be forced t
 
 ```
   core/        Rust      ids, validation, encoding, history, checkpoint, backpressure
-  abi/         C ABI     22 functions, the surface you bind to
+  abi/         C ABI     27 functions, the surface you bind to
   your code    yours     HTTP
 ```
+
+> **One warning before you read the Node packages for guidance.** Node is the reference
+> for the HTTP layer and a *counter-example* for everything below it: it ships a
+> hand-written TypeScript core rather than binding the Rust one. That is a deliberate
+> exception, not the pattern — see [Reading the reference
+> implementation](#reading-the-reference-implementation) for which files to copy and which
+> to ignore.
 
 ---
 
@@ -67,6 +74,7 @@ Check `ag_abi_version()` at load and refuse a library whose **major** differs
 | `ag_remove` | teardown |
 | `ag_cursor` | §5 |
 | `ag_gap_frame`, `ag_denied_frame` | §7 |
+| `ag_compare_ids` | §2.1, and never do it yourself — see below |
 
 `ag_subscribe` is one call because §4.5 requires registration, the checkpoint decision and
 the replay snapshot to describe **one instant**. Split across two FFI calls, a publish can
@@ -95,6 +103,12 @@ because its integer parser skips whitespace. Both halves are bounded at 2^53 −
 
 Formatting an id is safe and you will need it: `ag_cursor` hands back halves, and
 `<ms>-<seq>` with no padding is unambiguous.
+
+**Comparing** them is not safe to do yourself either. `1755083412345-10` sorts *before*
+`1755083412345-7` as a string, and a host that gets that wrong silently discards live
+events as already-seen. Use `ag_compare_ids`. You will need it the moment you keep any
+history of your own: deciding whether a cursor predates what your storage threw away is a
+comparison, and it is the same comparison the corpus exists to keep identical everywhere.
 
 ---
 
@@ -195,6 +209,53 @@ first; a route you mounted would be the one thing bypassing it, and connection c
 a description of the host's traffic. Hand back a snapshot and let them mount it.
 
 ---
+
+## Reading the reference implementation
+
+Node is the only adapter that exists, so it is the worked example — but only for the half
+you are writing. Copy the HTTP layer; ignore the core.
+
+| file | is it a model? |
+|---|---|
+| `packages/server/src/create-hub.ts` | **yes** — this is the checklist above, implemented. Read it alongside this document |
+| `packages/server/src/stats.ts` | **yes** — the counters, with attribution done correctly |
+| `packages/server/src/core-native.ts` | **yes** — the actual binding example: how a language wraps the core behind the seam |
+| `packages/server/src/core.ts` | **yes** — the seam itself. Your language wants an equivalent interface |
+| `conformance/http/adapters/node/app.mjs` | **yes** — copy this as your test app |
+| `packages/server/src/hub.ts`, `registry.ts` | **no. Do not copy these** |
+
+### Why Node reimplements the protocol, and why you must not
+
+`hub.ts` and `registry.ts` are a second, hand-written implementation of everything
+`core/` does — id assignment, validation, encoding, the history ring, the checkpoint. That
+is exactly what this document tells you not to write.
+
+It exists because of the order things happened. D2 measured Rust-via-wasm against plain
+JavaScript for the Node hot path and Rust *lost*, so the Node hub was written in
+TypeScript. D3 then reversed the premise rather than the measurement: the goal was the
+same hub in Python, Go and Ruby, and against five hand-written implementations one shared
+core is obviously right. Node kept its TypeScript core anyway, for one reason that still
+holds — `npm install` needs no prebuild, no `.node` artefact and no toolchain, and "install
+and go" is the whole on-ramp.
+
+So Node pays a price no other adapter should: **two implementations to keep in step,
+forever.** The only thing making that survivable is that both run the same corpus, and it
+has caught real divergence three times (D6, D9, D10). You get the corpus for free by
+binding the ABI. Do not volunteer for the cost.
+
+The seam is what makes this legible. `HubCore` in `core.ts` is one interface with two
+implementations behind it — `createTsCore` and `createNativeCore` — and everything above
+the seam is identical either way. That is why the entire Node test suite doubles as the
+Rust core's acceptance suite. Your adapter needs the `createNativeCore` half and nothing
+else.
+
+### Following the checklist through the code
+
+Every step in the checklist above appears in `create-hub.ts`, in order, under the section
+markers `// ---- §4.1 parse`, `// ---- §4.3 authorize` and `// ---- §4.5 the atomic
+block`. The atomic block is thirty lines and worth reading in one sitting: registration,
+teardown, the single permitted await, the re-check across it, the headers, then the four
+writes. Every comment in there names a failure that actually happened.
 
 ## Proving it
 

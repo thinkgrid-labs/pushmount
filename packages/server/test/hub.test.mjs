@@ -87,9 +87,25 @@ test('a cursor older than retained history reports truncated', () => {
   assert.equal(r.truncated, true, 'history moved past the cursor and must say so')
 })
 
-test('an empty hub cannot report truncated — there is nothing to have lost', () => {
+test('an empty hub reports a gap for a cursor it never issued', () => {
+  // This assertion used to be the opposite, on the reasoning that an empty hub "has
+  // nothing to have lost". That is the wrong intuition and it hid a real hole: an empty
+  // hub is also what a *restarted* one looks like, and a client resuming with a cursor
+  // from before the restart was told it had missed nothing. Everything published before
+  // the shutdown was then gone with nobody informed — silent staleness, which is the one
+  // failure §0 exists to eliminate. A hub that has never issued an id this high cannot
+  // know what came after it. Conformance vectors CP8 and CP10.
   const hub = new Hub()
   const r = hub.checkpointAndReplay({ ms: 1, seq: 0 }, ['t'])
+  assert.equal(r.truncated, true)
+  assert.deepEqual(r.frames, [])
+})
+
+test('but the cold-start cursor on an empty hub is not a gap', () => {
+  // The other half, and the one D6 exists to protect: `0-0` is what §5 hands a page on
+  // its first load, and reporting a gap for it teaches people to ignore the signal.
+  const hub = new Hub()
+  const r = hub.checkpointAndReplay({ ms: 0, seq: 0 }, ['t'])
   assert.equal(r.truncated, false)
   assert.deepEqual(r.frames, [])
 })

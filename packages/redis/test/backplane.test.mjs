@@ -246,6 +246,138 @@ test('a cursor older than the shared history reports earliest', options(), async
   }
 })
 
+test('a cold-start cursor is not a gap when nothing has been evicted', options(), async () => {
+  // §4.4: a stream that has evicted nothing must echo every cursor, including the `0-0`
+  // §5 hands out before the first publish. Comparing against the oldest *retained* entry
+  // instead fires `~gap` on every first page load — alongside the complete replay that
+  // disproves it.
+  const a = await node(key('cold'))
+  try {
+    const cold = await a.backplane.cursor()
+    assert.equal(cold, '0-0', 'an empty stream has no newest id')
+
+    // Before anything exists at all: nothing published means nothing missed.
+    const empty = await a.backplane.replay(cold, ['t'])
+    assert.equal(empty.truncated, false)
+
+    await a.hub.publish('t', 'one')
+    const last = await a.hub.publish('t', 'two')
+    await settled(a, last.id)
+
+    const sub = await openStream(a.base, `topics=t&last_event_id=${encodeURIComponent(cold)}`)
+    assert.equal(sub.res.headers.get('last-event-id-checkpoint'), cold)
+    await sub.waitFor((f) => f.includes('data: two'))
+    assert.equal(sub.data().length, 2, 'the whole stream replays')
+    assert.ok(!sub.frames.join('').includes('~gap'), sub.frames.join(''))
+    sub.close()
+  } finally {
+    await a.close()
+  }
+})
+
+test('a cold-start cursor IS a gap once something has been evicted', options(), async () => {
+  // The other half of the rule, and the one an over-eager fix breaks: a client asking for
+  // everything since the beginning cannot be served everything, so it must be told.
+  const a = await node(key('cold-trimmed'))
+  try {
+    let last
+    for (let i = 0; i < 5; i++) last = await a.hub.publish('t', i)
+    await settled(a, last.id)
+    const c = client()
+    const entries = await c.xrange(key('cold-trimmed'), '-', '+')
+    await c.xtrim(key('cold-trimmed'), 'MINID', entries[2][0])
+
+    const sub = await openStream(a.base, 'topics=t&last_event_id=0-0')
+    assert.equal(sub.res.headers.get('last-event-id-checkpoint'), 'earliest')
+    await sub.waitFor((f) => f.startsWith('event: ~gap'))
+    sub.close()
+  } finally {
+    await a.close()
+  }
+})
+
+test('a destroyed history is a gap, not silence', options(), async () => {
+  // Expiry, a `maxmemory` eviction, a FLUSHDB, or a failover onto a replica that never
+  // received the writes all leave the stream with no oldest entry to compare against.
+  // Answering "you missed nothing" there is silent staleness — §0's one unacceptable
+  // failure — and it is the answer the client trusts least visibly.
+  const a = await node(key('wiped'))
+  try {
+    const first = await a.hub.publish('t', 'one')
+    const last = await a.hub.publish('t', 'two')
+    await settled(a, last.id)
+    const c = client()
+    await c.del(key('wiped'))
+
+    const sub = await openStream(a.base, `topics=t&last_event_id=${encodeURIComponent(first.id)}`)
+    assert.equal(sub.res.headers.get('last-event-id-checkpoint'), 'earliest')
+    const gap = await sub.waitFor((f) => f.startsWith('event: ~gap'))
+    assert.equal(JSON.parse(gap.split('data: ')[1]).reason, 'history-truncated')
+    assert.equal(sub.data().length, 0)
+    sub.close()
+
+    // And a stream rebuilt under the same key still cannot vouch for the old cursor: the
+    // entries between it and the new beginning are gone whatever the key now holds.
+    const after = await a.hub.publish('t', 'three')
+    await settled(a, after.id)
+    const again = await a.backplane.replay(first.id, ['t'])
+    assert.equal(again.truncated, true)
+  } finally {
+    await a.close()
+  }
+})
+
+test('a backplane that adopts a running stream does not vouch for it', options(), async () => {
+  // Entries may have been evicted before this process ever looked, and nothing retained
+  // says otherwise. The honest answer to a cold-start cursor is "you may have missed
+  // something", not the "nothing was dropped" that only the stream's creator can give.
+  const c = client()
+  await c.xadd(key('adopt'), '*', 't', 't', 'p', 'published-before-anyone-was-watching')
+  const a = await node(key('adopt'))
+  try {
+    assert.equal((await a.backplane.replay('0-0', ['t'])).truncated, true)
+    // A cursor inside the retained range is answerable without vouching for anything.
+    const mine = await a.hub.publish('t', 'later')
+    assert.equal((await a.backplane.replay(mine.id, ['t'])).truncated, false)
+  } finally {
+    await a.close()
+  }
+})
+
+test('a worker joining a running deployment bootstraps with the shared cursor', options(), async () => {
+  // The rolling-deploy case, end to end. A has been serving for a while; B starts with an
+  // empty ring and has read nothing, so its own sequence is `0-0` while the stream holds
+  // everything A published. A page bootstrapped by B stamps that cursor, opens the stream
+  // with it, and — before this was fixed — was told it had missed the entire history.
+  const a = await node(key('join'))
+  try {
+    let last
+    for (let i = 0; i < 5; i++) last = await a.hub.publish('t', i)
+
+    const b = await node(key('join'))
+    try {
+      await b.hub.ready()
+      assert.equal(b.hub.cursor(), last.id, 'the shared sequence, not one process’s view')
+      assert.equal(await b.hub.sharedCursor(), last.id)
+
+      const sub = await openStream(b.base, `topics=t&last_event_id=${encodeURIComponent(b.hub.cursor())}`)
+      assert.equal(sub.res.headers.get('last-event-id-checkpoint'), last.id)
+      await sub.waitFor((f) => f === ':ok\n\n')
+      assert.equal(sub.data().length, 0, 'caught up, so there is nothing to replay')
+      assert.ok(!sub.frames.join('').includes('~gap'))
+
+      // And it is a live cursor, not a snapshot: the next publish arrives on that stream.
+      const next = await a.hub.publish('t', 'after')
+      await sub.waitFor((f) => f.startsWith(`id: ${next.id}\n`))
+      sub.close()
+    } finally {
+      await b.close()
+    }
+  } finally {
+    await a.close()
+  }
+})
+
 test('a publisher’s own subscribers receive the event too', options(), async () => {
   // Everything goes through the backplane, including this process's own publishes, so
   // that every process sees one ordering. This checks the round trip actually closes.

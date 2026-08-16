@@ -1,6 +1,6 @@
 {
   "name": "@aghoz/client",
-  "version": "0.1.0-rc.0",
+  "version": "0.4.0",
   "description": "Framework-agnostic browser client for the aghoz SSE protocol. Built on fetch and ReadableStream so missed updates are detected, not silently lost. Zero dependencies.",
   "keywords": [
     "server-sent-events",
@@ -36,7 +36,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -46,5 +49,16 @@
     "@aghoz/server": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   }
 }

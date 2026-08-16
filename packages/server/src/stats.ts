@@ -117,6 +117,13 @@ export interface HubStats {
     readonly backplane: number
     /** `authorize` threw, at connect or during revalidation. */
     readonly authorize: number
+    /**
+     * The persistent history store failed — a `load` that rejected at startup, or a
+     * write that did. A failed load leaves the hub empty, which the checkpoint rule then
+     * reports honestly; a failed write means an event reached subscribers but was not
+     * written down, so a restart will not replay it.
+     */
+    readonly history: number
   }
 }
 
@@ -132,7 +139,7 @@ export interface Counters {
   replayed: number
   denied: number
   truncated: number
-  errors: { publish: number; backplane: number; authorize: number }
+  errors: { publish: number; backplane: number; authorize: number; history: number }
 }
 
 export function createCounters(now: () => number): Counters {
@@ -153,7 +160,7 @@ export function createCounters(now: () => number): Counters {
     replayed: 0,
     denied: 0,
     truncated: 0,
-    errors: { publish: 0, backplane: 0, authorize: 0 },
+    errors: { publish: 0, backplane: 0, authorize: 0, history: 0 },
   }
 }
 

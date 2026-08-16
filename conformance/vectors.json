@@ -702,6 +702,54 @@
         0
       ],
       "expected": "earliest"
+    },
+    {
+      "id": "CP8",
+      "ref": "§7.1",
+      "desc": "a cursor newer than any id the hub has issued is a gap — this is a client resuming across a restart",
+      "maxHistoryBytes": 1048576,
+      "publishes": [
+        [
+          1000,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ],
+      "cursor": [
+        2000,
+        0
+      ],
+      "expected": "earliest"
+    },
+    {
+      "id": "CP9",
+      "ref": "§7.1",
+      "desc": "a cursor exactly at the newest id is not a gap — that is the ordinary case for a caught-up client",
+      "maxHistoryBytes": 1048576,
+      "publishes": [
+        [
+          1000,
+          "t",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ],
+      "cursor": [
+        1000,
+        0
+      ],
+      "expected": "echo"
+    },
+    {
+      "id": "CP10",
+      "ref": "§7.1",
+      "desc": "a real cursor against a hub that has published nothing is a gap, not a fresh start",
+      "maxHistoryBytes": 1048576,
+      "publishes": [],
+      "cursor": [
+        1755083412345,
+        7
+      ],
+      "expected": "earliest"
     }
   ],
   "append": [

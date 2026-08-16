@@ -1,6 +1,6 @@
 {
   "name": "@aghoz/redis",
-  "version": "0.1.0-rc.0",
+  "version": "0.4.0",
   "description": "Redis Streams backplane for aghoz — makes real-time SSE push reach subscribers across every process, pod or cluster worker, with Redis as the id sequencer.",
   "keywords": [
     "server-sent-events",
@@ -37,21 +37,36 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.json && node --test"
   },
-  "dependencies": {
-    "@aghoz/server": "workspace:*"
-  },
   "devDependencies": {
     "@types/node": "^22.20.1",
     "ioredis": "^5.11.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@aghoz/server": "workspace:*"
   },
   "engines": {
     "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "@aghoz/server": "workspace:*"
   }
 }

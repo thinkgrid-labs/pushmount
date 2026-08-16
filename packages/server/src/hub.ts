@@ -5,10 +5,17 @@
  * assignment, topic validation, frame encoding, and the history ring. It performs no
  * IO and knows nothing about HTTP; the handler layer owns sockets.
  *
- * Per DECISIONS.md D2 this is TypeScript rather than a Rust core. That decision rests
- * entirely on `conformance/vectors.json` remaining the arbiter — when the Rust hub
- * lands in v0.3 it reads the same corpus. Do not add behaviour here that the corpus
- * does not pin down.
+ * This is TypeScript rather than a binding to the Rust core, so that installing the
+ * package needs no prebuild, no `.node` file and no toolchain — DECISIONS.md D2, as
+ * amended by D3, which made Rust the shared core for *other* languages rather than a
+ * replacement for this one. `createHub({ core: createNativeCore(native) })` swaps in the
+ * Rust core for anyone who wants it.
+ *
+ * That arrangement rests entirely on `conformance/vectors.json` remaining the arbiter:
+ * the Rust core already reads the same corpus, and both must keep passing it. **Do not
+ * add behaviour here that the corpus does not pin down** — an unpinned rule is one the
+ * two implementations will eventually answer differently, which has happened three times
+ * already (D6, D9, D10).
  */
 
 const MAX_TOPIC_BYTES = 255
@@ -298,13 +305,25 @@ export class Hub {
   } {
     if (cursor === null) return { truncated: false, frames: [] }
 
-    // "Was anything dropped that this cursor had not already seen?" — which is the
-    // question §7.1 actually asks. See `#lastTrimmed` for why the oldest retained entry
-    // is the wrong thing to compare against. A cursor equal to the evicted id is NOT a
-    // gap: that event is the one the client already holds, and everything after it is
-    // still here.
-    const truncated =
+    // Two ways a cursor can be one this hub cannot vouch for.
+    //
+    // Below what the ring evicted — "was anything dropped that this cursor had not
+    // already seen?", the question §7.1 actually asks. See `#lastTrimmed` for why the
+    // oldest retained entry is the wrong thing to compare against. A cursor equal to the
+    // evicted id is NOT a gap: that event is the one the client already holds.
+    const evicted =
       this.#lastTrimmed !== null && compareIds(cursor, this.#lastTrimmed) < 0
+
+    // Or above every id this hub has ever issued or recorded, which means the cursor came
+    // from somewhere this hub has never been — a previous life, most often. A restarted
+    // process has an empty ring and nothing trimmed, so the rule above alone answers "you
+    // missed nothing" to a client resuming across the restart, and everything published
+    // before the shutdown is gone with nobody told. That is the silent staleness §0
+    // exists to eliminate, and detecting it needs no configuration: a hub that has never
+    // seen an id this high cannot know what came after it.
+    const beyond = compareIds(cursor, { ms: this.#lastMs, seq: this.#lastSeq }) > 0
+
+    const truncated = evicted || beyond
 
     const frames: Uint8Array[] = []
     for (let i = this.#head; i < this.#history.length; i++) {

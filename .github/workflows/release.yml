@@ -1,0 +1,129 @@
+name: release
+
+# Publishes every package to npm when a `v*` tag is pushed.
+#
+#   git tag v0.4.0 && git push origin v0.4.0
+#
+# Rehearse first — "Run workflow" on this file with dry run left on packs every tarball
+# and prints what would be published without touching the registry. Worth doing once
+# before the first real release, because the failure modes here are all discovered
+# afterwards.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Pack and verify only — do not publish'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # npm provenance. Remove this and the --provenance flag below if the repository is
+  # private; provenance can only be attested for a public one.
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    # The backplane tests skip themselves without a live Redis, and a release is exactly
+    # the wrong moment for a suite to quietly cover less than it appears to.
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+
+      # ---- gates -------------------------------------------------------------
+      #
+      # Re-run here rather than trusting that CI passed on the commit. A tag can be
+      # pushed at a commit CI never saw, and "it was green last week" is not a claim
+      # worth publishing on.
+
+      - name: tests
+        run: pnpm -r test
+        env:
+          REDIS_PORT: 6379
+
+      - name: conformance — protocol core
+        run: pnpm conformance
+
+      - name: conformance — HTTP layer
+        run: pnpm conformance:http
+
+      - name: repository invariants
+        run: node scripts/check-invariants.mjs
+
+      - name: the quickstart still runs
+        run: node scripts/smoke-example.mjs
+
+      # ---- the tag has to mean what it says ----------------------------------
+
+      - name: tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          pkg=$(node -p "require('./packages/server/package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag v$tag does not match package version $pkg."
+            echo "::error::Bump with 'pnpm version:set $tag' and commit before tagging."
+            exit 1
+          fi
+          echo "publishing $pkg"
+
+      # Versions are lockstepped across packages — check-invariants enforces it — so the
+      # single comparison above covers all ten.
+
+      # ---- the files npm shows -----------------------------------------------
+
+      - name: generate per-package README and LICENSE
+        run: node scripts/prepare-publish.mjs
+
+      # ---- publish -----------------------------------------------------------
+
+      - name: pack and report (dry run)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: |
+          pnpm -r exec pnpm pack --pack-destination "$RUNNER_TEMP/tarballs"
+          echo '### Tarballs that would be published' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          for f in "$RUNNER_TEMP"/tarballs/*.tgz; do
+            echo "- \`$(basename "$f")\` — $(du -h "$f" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Contents of one, as a spot check:' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tar -tzf "$RUNNER_TEMP"/tarballs/aghoz-server-*.tgz >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: publish to npm
+        if: startsWith(github.ref, 'refs/tags/v')
+        # `pnpm publish` rather than `npm publish`: it rewrites the `workspace:*` ranges
+        # into real versions as it packs. `npm publish` would ship them verbatim and every
+        # tarball would be uninstallable.
+        #
+        # `--no-git-checks` because a tag build is a detached HEAD, which pnpm otherwise
+        # refuses to publish from.
+        run: pnpm -r publish --access public --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

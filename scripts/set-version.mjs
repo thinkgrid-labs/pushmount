@@ -29,3 +29,18 @@ for (const pkg of PACKAGES) {
   console.log(`  ${manifest.name} → ${version}`)
 }
 console.log('\nrun `node scripts/check-invariants.mjs` to confirm lockstep.')
+
+// The Rust workspace version, kept in step with the packages.
+//
+// The crates are not published to crates.io — they exist to be linked by bindings — but a
+// workspace whose version disagrees with the packages built from it is a question nobody
+// wants to have to answer during an incident.
+const cargo = `${root}Cargo.toml`
+const before = readFileSync(cargo, 'utf8')
+const after = before.replace(/^version = "[^"]*"$/m, `version = "${version}"`)
+if (after === before) {
+  console.error('  WARNING: Cargo.toml workspace version not found — left unchanged')
+} else {
+  writeFileSync(cargo, after)
+  console.log(`  Cargo.toml workspace → ${version}`)
+}

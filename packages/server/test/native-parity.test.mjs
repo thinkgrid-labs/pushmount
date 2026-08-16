@@ -377,9 +377,14 @@ test('replay from shared history is encoded, not re-recorded', options, async ()
     // §6.0 survives the shared log and the FFI boundary together.
     assert.equal(data[1], 'id: 9000-2\nevent: t\norigin: tab-c\ndata: two\n\n')
 
-    // Encoding must not have advanced the cursor: these belong to the shared log, and
-    // recording them here would duplicate them out of id order on every reconnect.
-    assert.equal(s.hub.cursor(), '0-0')
+    // Encoding must record nothing: these belong to the shared log, and appending them
+    // here would duplicate them into the local ring, out of id order, on every reconnect.
+    //
+    // Asserted through `received` rather than through `cursor()`. With a backplane,
+    // `cursor()` reports this process's view of the *shared* sequence and is floored at
+    // where it joined the log, so it is legitimately non-zero here and says nothing about
+    // whether replay was recorded. `received` counts only what actually entered the ring.
+    assert.equal(s.hub.stats().received, 0, 'shared-history replay must not be recorded')
   } finally {
     await s.close()
   }

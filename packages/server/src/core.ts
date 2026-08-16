@@ -96,6 +96,16 @@ export interface HubCore {
   slowConsumerFrame(subscriber: number): Uint8Array
   truncatedFrame(subscriber: number): Uint8Array
   deniedFrame(topics: readonly string[]): Uint8Array
+  /**
+   * §2.1 — compare two ids, returning negative, zero or positive.
+   *
+   * On the seam because the handler layer genuinely needs it and must not reimplement it:
+   * ids MUST NOT be compared as strings (`1755083412345-10` sorts before
+   * `1755083412345-7`), and a host that got this wrong would silently discard live events
+   * as already-seen. The persistent-history path is the first caller — it has to decide
+   * whether a cursor predates what a store trimmed away.
+   */
+  compareIds(a: string, b: string): number
   validTopic(topic: string): boolean
   /** §6.0 — an origin reaches the wire, so it is validated like a topic. */
   validOrigin(origin: string): boolean

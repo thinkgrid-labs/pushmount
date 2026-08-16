@@ -2,3 +2,9 @@ target/
 node_modules/
 dist/
 spikes/wasm-vs-ts/pkg/
+
+# Generated into each package by scripts/prepare-publish.mjs, for the tarball only.
+# Ten hand-maintained copies would drift; these are rebuilt on every publish.
+packages/*/README.md
+packages/*/LICENSE-MIT
+packages/*/LICENSE-APACHE

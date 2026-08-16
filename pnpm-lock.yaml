@@ -60,6 +60,18 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/history-file:
+    devDependencies:
+      '@aghoz/server':
+        specifier: workspace:*
+        version: link:../server
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/nest:
     devDependencies:
       '@aghoz/server':
@@ -125,11 +137,10 @@ importers:
         version: 5.9.3
 
   packages/react-query:
-    dependencies:
+    devDependencies:
       '@aghoz/react':
         specifier: workspace:*
         version: link:../react
-    devDependencies:
       '@aghoz/server':
         specifier: workspace:*
         version: link:../server
@@ -162,11 +173,10 @@ importers:
         version: 5.9.3
 
   packages/redis:
-    dependencies:
+    devDependencies:
       '@aghoz/server':
         specifier: workspace:*
         version: link:../server
-    devDependencies:
       '@types/node':
         specifier: ^22.20.1
         version: 22.20.1
@@ -193,10 +203,11 @@ importers:
         version: 5.9.3
 
   packages/svelte:
-    devDependencies:
+    dependencies:
       '@aghoz/client':
         specifier: workspace:*
         version: link:../client
+    devDependencies:
       '@aghoz/server':
         specifier: workspace:*
         version: link:../server
@@ -211,10 +222,11 @@ importers:
         version: 5.9.3
 
   packages/vue:
-    devDependencies:
+    dependencies:
       '@aghoz/client':
         specifier: workspace:*
         version: link:../client
+    devDependencies:
       '@aghoz/server':
         specifier: workspace:*
         version: link:../server

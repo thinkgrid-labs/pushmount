@@ -270,6 +270,94 @@ test('the cold-start cursor 0-0 replays without reporting a gap', async () => {
   }
 })
 
+/**
+ * A backplane that is already carrying a deployment's traffic when this process starts:
+ * its sequence is at `at`, and nothing has come through the reader yet. `deliver` is the
+ * reader, so a test can decide when this process learns anything.
+ */
+function runningBackplane(at) {
+  let sink = () => {}
+  let cursor = at
+  return {
+    publish: async (topic, payload, origin) => {
+      cursor = `${Number(cursor.split('-')[0]) + 1}-0`
+      sink({ id: cursor, topic, payload, origin })
+      return cursor
+    },
+    onEvent: (next) => {
+      sink = next
+    },
+    replay: async () => ({ truncated: false, events: [] }),
+    cursor: async () => cursor,
+    close: async () => {},
+    deliver: (event) => sink(event),
+    advance: (id) => {
+      cursor = id
+    },
+  }
+}
+
+// §5 in a cluster. A worker that has just booted has an empty ring and has read nothing,
+// so its own sequence is `0-0` — while the shared log it just joined holds everything the
+// deployment published before it started. Stamping that on a page asks the stream for the
+// entire retained history, and is answered with `~gap`: a refetch on every page a freshly
+// started worker serves, which is every page for the length of a rolling deploy.
+test('a worker joining a running deployment does not hand out a cold-start cursor', async () => {
+  const backplane = runningBackplane('1755083412345-7')
+  const s = await boot({ backplane })
+  try {
+    await s.hub.ready()
+    assert.equal(s.hub.cursor(), '1755083412345-7', 'the sequence is shared, so the cursor is')
+    assert.equal(await s.hub.sharedCursor(), '1755083412345-7')
+
+    const res = await fetch(`${s.base}/events/cursor`)
+    assert.deepEqual(await res.json(), { cursor: '1755083412345-7' })
+  } finally {
+    await s.close()
+  }
+})
+
+test('the cursor tracks the shared sequence and never walks back', async () => {
+  const backplane = runningBackplane('1000-0')
+  const s = await boot({ backplane })
+  try {
+    await s.hub.ready()
+    backplane.deliver({ id: '2000-0', topic: 't', payload: 'from another process' })
+    assert.equal(s.hub.cursor(), '2000-0', 'an event read from the log advances it')
+
+    // A backplane answering with something older — a replica behind the primary, a
+    // reordered response — must not drag a cursor this process has already handed out
+    // backwards. A cursor that moves back re-replays what the client already applied.
+    backplane.advance('500-0')
+    assert.equal(await s.hub.sharedCursor(), '2000-0')
+  } finally {
+    await s.close()
+  }
+})
+
+test('a backplane that cannot answer at boot still serves, with a cursor merely behind', async () => {
+  const errors = []
+  const backplane = {
+    ...runningBackplane('0-0'),
+    cursor: async () => {
+      throw new Error('redis unreachable')
+    },
+  }
+  const s = await boot({ backplane, onError: (e) => errors.push(e) })
+  try {
+    // `ready` resolving is the load-bearing part: the stream handler awaits it, so a
+    // rejection here would take out every request rather than one cursor.
+    await s.hub.ready()
+    assert.equal(s.hub.cursor(), '0-0')
+    assert.equal(await s.hub.sharedCursor(), '0-0', 'falls back rather than failing the page')
+    const res = await fetch(`${s.base}/events/cursor`)
+    assert.equal(res.status, 200)
+    assert.equal(errors.length > 0, true, 'and it is reported rather than swallowed')
+  } finally {
+    await s.close()
+  }
+})
+
 // The mirror image, and the more dangerous one. A frame bigger than the whole budget is
 // evicted by the very push that added it, leaving the ring empty — and an empty ring has
 // no oldest entry to compare against, so a real loss was reported as "nothing missed".

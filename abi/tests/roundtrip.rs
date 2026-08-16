@@ -631,3 +631,30 @@ fn the_delta_entry_points_reject_a_null_hub() {
     assert_eq!(ag_note_sent(std::ptr::null_mut(), 1, 1), AG_ERR_NULL);
     assert_eq!(ag_note_flushed(std::ptr::null_mut(), 1, 1), AG_ERR_NULL);
 }
+
+// ------------------------------------------------------ ABI 3200: id comparison
+
+#[test]
+fn compare_ids_orders_numerically_not_lexicographically() {
+    let mut out = 0i32;
+    // The one every string comparison gets backwards, and the reason this is exposed at
+    // all rather than left to each binding.
+    assert_eq!(ag_compare_ids(s("1755083412345-7"), s("1755083412345-10"), &mut out), AG_OK);
+    assert_eq!(out, -1);
+    assert_eq!(ag_compare_ids(s("1755083412345-10"), s("1755083412345-7"), &mut out), AG_OK);
+    assert_eq!(out, 1);
+    assert_eq!(ag_compare_ids(s("1000-0"), s("1000-0"), &mut out), AG_OK);
+    assert_eq!(out, 0);
+    // ms dominates seq.
+    assert_eq!(ag_compare_ids(s("2-0"), s("1-999"), &mut out), AG_OK);
+    assert_eq!(out, 1);
+}
+
+#[test]
+fn compare_ids_rejects_a_non_canonical_side() {
+    let mut out = 7i32;
+    assert_eq!(ag_compare_ids(s("01-0"), s("1-0"), &mut out), AG_ERR_MALFORMED_ID);
+    assert_eq!(ag_compare_ids(s("1-0"), s("nonsense"), &mut out), AG_ERR_MALFORMED_ID);
+    assert_eq!(out, 7, "out is untouched on error");
+    assert_eq!(ag_compare_ids(s("1-0"), s("2-0"), std::ptr::null_mut()), AG_ERR_NULL);
+}

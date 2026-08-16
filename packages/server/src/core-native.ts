@@ -156,6 +156,7 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
     slowConsumerFrame: (subscriber) => hub.slowConsumerFrame(subscriber),
     truncatedFrame: (subscriber) => hub.truncatedFrame(subscriber),
     deniedFrame: (topics) => hub.deniedFrame([...topics]),
+    compareIds: (a, b) => native.compareIds(a, b),
     validTopic: (topic) => native.validateTopic(topic),
     validOrigin: (origin) => native.validateOrigin(origin),
   }

@@ -284,6 +284,29 @@ const vectors = {
       publishes: [[1000, 't', x64]],
       cursor: [0, 0], expected: 'earliest',
     },
+    // A cursor can also be unvouchable from the other direction: newer than anything the
+    // hub has ever issued. That is what a client resuming across a process restart looks
+    // like — the ring is empty and nothing was trimmed, so the eviction rule alone answers
+    // "you missed nothing" and everything published before the shutdown is gone with
+    // nobody told. Silent staleness, arrived at from the opposite end.
+    {
+      id: 'CP8', ref: '§7.1', desc: 'a cursor newer than any id the hub has issued is a gap — this is a client resuming across a restart',
+      maxHistoryBytes: 1048576,
+      publishes: [[1000, 't', x64]],
+      cursor: [2000, 0], expected: 'earliest',
+    },
+    {
+      id: 'CP9', ref: '§7.1', desc: 'a cursor exactly at the newest id is not a gap — that is the ordinary case for a caught-up client',
+      maxHistoryBytes: 1048576,
+      publishes: [[1000, 't', x64]],
+      cursor: [1000, 0], expected: 'echo',
+    },
+    {
+      id: 'CP10', ref: '§7.1', desc: 'a real cursor against a hub that has published nothing is a gap, not a fresh start',
+      maxHistoryBytes: 1048576,
+      publishes: [],
+      cursor: [1755083412345, 7], expected: 'earliest',
+    },
   ],
 
   // ---- the externally-assigned-id path -------------------------------------

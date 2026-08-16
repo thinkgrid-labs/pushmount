@@ -95,12 +95,13 @@ typedef struct {
 
 /* major * 1000 + minor. Refuse to load a library whose major differs.
  *
- * Currently 3100.
+ * Currently 3200.
  *
  * 3000 added ag_append and ag_encode. A major bump because AG_ERR_MALFORMED_ID is a
  * status a 2000-era caller has no arm for.
  * 3100 added ag_note_sent and ag_note_flushed. A minor bump: new symbols returning
- * existing status codes, so a 3000-era caller keeps working untouched. */
+ * existing status codes, so a 3000-era caller keeps working untouched.
+ * 3200 added ag_compare_ids. Minor for the same reason. */
 uint32_t ag_abi_version(void);
 
 ag_hub *ag_hub_new(const ag_config *config); /* config may be NULL for all defaults */
@@ -192,6 +193,15 @@ int32_t ag_note_buffer(ag_hub *hub, uint64_t subscriber, uint64_t queued_bytes);
  * the counter to zero, and a double-counted one cannot wrap it to the top. */
 int32_t ag_note_sent(ag_hub *hub, uint64_t subscriber, uint64_t bytes);
 int32_t ag_note_flushed(ag_hub *hub, uint64_t subscriber, uint64_t bytes);
+
+/* §2.1 — writes -1, 0 or 1 through out. AG_ERR_MALFORMED_ID if either side is not a
+ * canonical <ms>-<seq>.
+ *
+ * Ids MUST NOT be compared as strings: "1755083412345-10" sorts before
+ * "1755083412345-7", and a host that gets this wrong silently discards live events as
+ * already-seen. A host keeping persistent history needs this to decide whether a cursor
+ * predates what its storage compacted away. */
+int32_t ag_compare_ids(ag_str a, ag_str b, int32_t *out);
 
 /* Idempotent. Returns 1 if the subscriber existed, 0 if not. */
 int32_t ag_remove(ag_hub *hub, uint64_t subscriber);

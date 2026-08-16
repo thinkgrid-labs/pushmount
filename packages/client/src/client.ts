@@ -14,6 +14,15 @@ export type ClientState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'clo
 export interface EventMeta {
   readonly id: string
   readonly topic: string
+  /**
+   * §6.0 — the origin the publisher echoed, when there was one.
+   *
+   * Almost no application wants this: a client already skips its own echoes, so by the
+   * time a handler runs this is somebody else's id or nothing at all. It is exposed for
+   * one caller — a shared connection forwarding frames to other tabs, which must pass the
+   * origin along so each tab can decide for itself whether the event is its own.
+   */
+  readonly origin?: string
 }
 
 export type Handler = (data: string, meta: EventMeta) => void
@@ -395,9 +404,14 @@ export class Client {
 
           const set = this.#handlers.get(event.event)
           if (set === undefined) continue
+          const meta: EventMeta = {
+            id: event.id,
+            topic: event.event,
+            ...(event.origin !== undefined && { origin: event.origin }),
+          }
           for (const handler of [...set]) {
             try {
-              handler(event.data, { id: event.id, topic: event.event })
+              handler(event.data, meta)
             } catch (error) {
               // One misbehaving component must not tear down the shared connection.
               this.#options.onError(error)

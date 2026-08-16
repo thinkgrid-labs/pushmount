@@ -72,10 +72,11 @@ observable as a cursor regression.
 
 ### 2.3 Why this shape
 
-Ownership of id assignment moves to the backplane in v0.3 (Redis, Postgres). The *format*
-is what browsers have already deployed by then, so it is fixed now. This shape is issuable
-by a single process, by Redis, and by a Postgres sequence without changing the meaning of
-"newer than the cursor."
+Ownership of id assignment moves to the backplane wherever one is configured, and the
+format was fixed early precisely so it could. `XADD` issues exactly this shape, which is
+why the Redis backplane can be the sequencer rather than merely the transport. A single
+process and a Postgres sequence can issue it too, without changing the meaning of "newer
+than the cursor."
 
 ---
 
@@ -283,6 +284,14 @@ GET <mount-path>/cursor
 
 Returns the id the hub would assign next, minus nothing — that is, the newest id currently
 assigned, or the string `"0-0"` if the hub has published nothing.
+
+Where id assignment belongs to a shared sequencer (§2.3), "currently assigned" means the
+**shared** sequence's newest id, not the answering process's view of it. A process that
+answers with only what it has read itself hands a freshly started worker's clients a cursor
+from before the log they are about to join — which §4.4 correctly reports as a gap, making
+the endpoint that exists to prevent a refetch the thing that causes one. Answering behind
+the shared sequence costs replay and answering ahead of it costs events, so an
+implementation that cannot be exact MUST err behind.
 
 ### 5.1 Why this exists
 
@@ -632,6 +641,8 @@ Tracked here rather than in issues until v0.1 ships.
 3. ~~**Duplicate delivery to the originating tab.**~~ **Resolved** by the `origin` field
    (§6.0): the publisher echoes the id the writing client supplied, and that client skips
    the event while still advancing its cursor.
-4. **Multi-process publish.** Until a backplane exists (v0.3), a publish in one process
-   reaches only that process's subscribers. The server MUST warn at startup when clustering
-   is detectable and the in-memory backplane is in use.
+4. **Multi-process publish.** Without a backplane, a publish in one process reaches only
+   that process's subscribers. The server MUST warn at startup when clustering is
+   detectable and no backplane is configured. A Redis Streams backplane ships; a Postgres
+   `LISTEN`/`NOTIFY` one is planned, and will need its own sequencer since Postgres has no
+   equivalent of `XADD`'s id.

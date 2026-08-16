@@ -10,6 +10,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { CoreError, type HubCore } from './core.js'
 import { createTsCore } from './core-ts.js'
 import type { Backplane } from './backplane.js'
+import type { HistoryStore } from './history.js'
 import {
   createCounters,
   snapshot,
@@ -65,6 +66,16 @@ export interface CreateHubOptions {
    * can tell it is one worker of several.
    */
   backplane?: Backplane
+  /**
+   * Makes replay survive a restart.
+   *
+   * Without one, a restarted hub cannot vouch for a resuming client's cursor and honestly
+   * says so — the client is told `earliest` and refetches. Correct, but it means every
+   * connected client refetches at once on every deploy.
+   *
+   * Mutually exclusive with `backplane`, which already is a persistent shared history.
+   */
+  history?: HistoryStore
 }
 
 /**
@@ -239,7 +250,114 @@ export function createHub(options: CreateHubOptions = {}) {
     }
   }
 
+  const store = options.history
+  if (store !== undefined && options.backplane !== undefined) {
+    // Both would record every event, and the backplane's copy is the one replay reads —
+    // so the store would be written to forever and never read, which looks like durability
+    // and is not. A Redis stream already is a persistent shared history.
+    throw new TypeError(
+      'aghoz: `history` and `backplane` are mutually exclusive — a backplane is already a persistent shared history',
+    )
+  }
+
+  /**
+   * Resolves once the ring has been restored. Awaited by the handler, so forgetting
+   * `hub.ready()` costs a microtask rather than correctness: a request served before
+   * restoration finished would see an empty hub and report a gap to a client that had
+   * missed nothing.
+   */
+  /**
+   * The newest id a store reports having dropped, if any.
+   *
+   * Kept here rather than pushed into the core because it is not a protocol rule — it is
+   * one host's knowledge of what its own storage threw away. The core's ring has its own
+   * eviction mark and knows nothing of a file that was compacted before boot.
+   */
+  let historyFloor: string | undefined
+
+  /**
+   * The newest id the shared log held when this process joined it — `0-0` without a
+   * backplane, where the core's own sequence is the whole story.
+   *
+   * §5's cursor is a claim about the sequence, and with a backplane the sequence is
+   * shared: a worker that has just booted has an empty ring and has read nothing, so
+   * `core.cursor()` is `0-0` while the log it just joined holds everything published
+   * before it started. Handing that to a page as its cold-start cursor asks the stream
+   * for the entire retained history and is answered with `~gap` — a refetch, and a
+   * `~gap` callback, on every page a freshly started worker serves.
+   *
+   * A cursor behind the sequence costs replay; one ahead of it costs events. This can
+   * only ever be behind — every id it holds came out of the shared log — and seeding it
+   * at boot bounds "behind" by the reader's round trip rather than by how long ago this
+   * process started.
+   */
+  let joinedAt = '0-0'
+
   const backplane = options.backplane
+
+  const restored: Promise<void> =
+    store === undefined
+      ? Promise.resolve()
+      : store
+          .load()
+          .then(({ events, trimmed }) => {
+            historyFloor = trimmed
+            for (const event of events) {
+              // Their original ids, in their original order. `append` advances the
+              // sequence past each, so a later local publish cannot reissue one, and the
+              // ring's own byte budget evicts the oldest exactly as it would have live.
+              core.append(event.id, event.topic, event.payload, event.origin)
+              counters.received++
+            }
+          })
+          .catch((error) => {
+            counters.errors.history++
+            onError(error)
+            // Deliberately not rethrown. A hub that starts empty is the state it would
+            // have been in with no store at all, and the checkpoint rule then tells every
+            // resuming client the truth. Refusing to boot would be worse.
+          })
+
+  const joined: Promise<void> =
+    backplane === undefined
+      ? Promise.resolve()
+      : backplane
+          .cursor()
+          // `compareIds` rather than an assignment: it rejects an id the backplane had no
+          // business returning, and it keeps this to advancing only — the same rule the
+          // ring's own eviction mark follows, for the same reason.
+          .then((id) => {
+            if (core.compareIds(id, joinedAt) > 0) joinedAt = id
+          })
+          .catch((error) => {
+            counters.errors.backplane++
+            onError(error)
+            // Not rethrown, for the reason above: a hub that cannot reach its backplane
+            // at boot still serves, and every cursor it hands out is merely behind rather
+            // than wrong. `ready` must resolve or the handler that awaits it never runs.
+          })
+
+  const ready: Promise<void> = Promise.all([restored, joined]).then(() => undefined)
+
+  /** This process's view of the sequence: its own ring, never behind where it joined. */
+  function localCursor(): string {
+    const own = core.cursor()
+    return core.compareIds(joinedAt, own) > 0 ? joinedAt : own
+  }
+
+  /** The shared sequence's own answer, or this process's view if it cannot be had. */
+  async function sharedCursor(): Promise<string> {
+    if (backplane === undefined) return localCursor()
+    try {
+      const shared = await backplane.cursor()
+      return core.compareIds(shared, localCursor()) > 0 ? shared : localCursor()
+    } catch (error) {
+      counters.errors.backplane++
+      onError(error)
+      return localCursor()
+    }
+  }
+
   if (backplane !== undefined) {
     backplane.onEvent((event) => {
       try {
@@ -353,9 +471,9 @@ export function createHub(options: CreateHubOptions = {}) {
     /**
      * §2, §4.5 — assign an id, append to history, fan out.
      *
-     * Returns a promise so that the v0.3 backplane, which owns id assignment, does not
-     * force a breaking change. Not awaiting is fully supported: errors are routed to
-     * `onError` rather than becoming an unhandled rejection.
+     * Returns a promise because a backplane owns id assignment, so the id is not known
+     * until it answers. Not awaiting is fully supported: errors are routed to `onError`
+     * rather than becoming an unhandled rejection.
      */
     publish(topic: string, data: unknown, options: PublishOptions = {}): Promise<PublishAck> {
       try {
@@ -392,7 +510,28 @@ export function createHub(options: CreateHubOptions = {}) {
 
         const { id, frame, targets } = core.publish(now(), topic, payload, origin)
         counters.published++
-        return Promise.resolve({ id, delivered: fanOut(frame, targets) })
+        const delivered = fanOut(frame, targets)
+
+        if (store !== undefined) {
+          // Written after delivery, and not awaited. An event that reached subscribers has
+          // happened; making the publish wait on a disk write would put the store's
+          // latency on the path of every live update, to protect only the replay a
+          // restart would need.
+          try {
+            const written = store.append({ id, topic, payload, ...(origin !== undefined && origin !== '' && { origin }) })
+            if (written instanceof Promise) {
+              written.catch((error) => {
+                counters.errors.history++
+                onError(error)
+              })
+            }
+          } catch (error) {
+            counters.errors.history++
+            onError(error)
+          }
+        }
+
+        return Promise.resolve({ id, delivered })
       } catch (error) {
         counters.errors.publish++
         onError(error)
@@ -417,9 +556,52 @@ export function createHub(options: CreateHubOptions = {}) {
       return snapshot(counters, now, connections.values())
     },
 
-    /** §5 — the current cursor, for closing the cold-start window. */
+    /**
+     * Resolves once a persistent history store has finished restoring the ring, and once
+     * a backplane has reported where the shared log stood when this process joined it.
+     *
+     * Await it at boot if you want `hub.cursor()` to be meaningful before the first
+     * request — the bootstrap endpoint in the quickstart reads it, and a cursor read
+     * mid-restore, or before the shared log has answered, is behind. The stream handler
+     * and `cursorHandler` await this internally, so forgetting it costs a microtask
+     * rather than correctness.
+     *
+     * Resolves immediately when neither a store nor a backplane is configured, and never
+     * rejects: a failure to restore or to reach the backplane is reported through
+     * `onError` and leaves a hub that still serves.
+     */
+    ready(): Promise<void> {
+      return ready
+    },
+
+    /**
+     * §5 — the current cursor, for closing the cold-start window.
+     *
+     * With a backplane this is this process's view of the shared sequence: correct from
+     * boot once `ready()` has resolved, and behind the shared log afterwards by at most
+     * the reader's round trip — the events published elsewhere in the last millisecond
+     * or so. Behind is the safe direction, and it is the direction this can only be in:
+     * the extra events are replayed on connect rather than skipped.
+     *
+     * `sharedCursor()` pays a round trip to close that window exactly. Prefer it when a
+     * replayed event is not idempotent for your client; this one when it is, or when the
+     * cursor is being stamped on a response that cannot afford the wait.
+     */
     cursor(): string {
-      return core.cursor()
+      return localCursor()
+    },
+
+    /**
+     * §5 — the newest id the *shared* sequence has assigned, asked of the backplane
+     * rather than of this process.
+     *
+     * Identical to `cursor()` when no backplane is configured, where one process is the
+     * whole sequence. Falls back to `cursor()` if the backplane cannot answer, because a
+     * cold-start cursor that is merely behind still closes the window §5.1 is about,
+     * while failing the page does not.
+     */
+    sharedCursor(): Promise<string> {
+      return sharedCursor()
     },
 
     connectionCount(): number {
@@ -450,6 +632,12 @@ export function createHub(options: CreateHubOptions = {}) {
 
     close(): void {
       closed = true
+      // Fire and forget: `close()` is synchronous by contract, and a store that fails to
+      // flush on the way out must not become an unhandled rejection during shutdown.
+      store?.close().catch((error) => {
+        counters.errors.history++
+        onError(error)
+      })
       for (const id of [...connections.keys()]) drop(id, 'hub-closed')
       for (const timer of timers) clearInterval(timer)
       timers.clear()
@@ -459,11 +647,28 @@ export function createHub(options: CreateHubOptions = {}) {
       }
     },
 
-    /** §5 — `GET <mount>/cursor`. */
+    /**
+     * §5 — `GET <mount>/cursor`.
+     *
+     * Answers for the shared sequence when there is one. This endpoint exists to be read
+     * beside a page's data, so it is the one place that can afford the round trip to be
+     * exact — and the one an application reaches for when it has not thought about which
+     * process is answering, which is precisely when a per-process answer misleads.
+     */
     cursorHandler() {
       return (_req: IncomingMessage, res: ServerResponse): void => {
-        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-        res.end(JSON.stringify({ cursor: core.cursor() }))
+        // Awaited exactly like the stream handler: an answer given mid-restore, or before
+        // the shared log has said where it stands, is behind for no reason.
+        void ready
+          .then(sharedCursor)
+          .then((cursor) => {
+            res.writeHead(200, {
+              'content-type': 'application/json',
+              'cache-control': 'no-store',
+            })
+            res.end(JSON.stringify({ cursor }))
+          })
+          .catch(onError) // The socket went away mid-answer; nothing left to reply to.
       }
     },
 
@@ -520,6 +725,12 @@ export function createHub(options: CreateHubOptions = {}) {
       }
 
       return async (appReq: Req, res: ServerResponse): Promise<void> => {
+        // Before anything else, and well before §4.5's atomic block. A request served
+        // mid-restore would see an empty ring and report a gap to a client that had
+        // missed nothing — the false positive D6 exists to prevent, reintroduced by the
+        // feature meant to avoid refetches. A microtask when there is no store.
+        await ready
+
         // `appReq` is what the framework decorated and what `authorize` sees.
         // `req` is the Node request that owns the socket and the close events.
         const req = toNode(appReq)
@@ -611,6 +822,25 @@ export function createHub(options: CreateHubOptions = {}) {
 
         let truncated = subscribed.checkpoint === 'earliest'
         let replay: readonly Uint8Array[] = subscribed.replay
+
+        // A bounded store discards its oldest entries, and the core's ring knows nothing
+        // about a file compacted before this process booted. Without this the hub would
+        // answer "you missed nothing" to a client whose events were thrown away by the
+        // very store meant to preserve them.
+        //
+        // Equal is not a gap, matching the ring's own rule: that is the event the client
+        // already holds.
+        if (historyFloor !== undefined && cursor !== undefined && !truncated) {
+          try {
+            if (core.compareIds(cursor, historyFloor) < 0) truncated = true
+          } catch (error) {
+            // An unparseable floor is the store's bug, not the client's. Over-report
+            // rather than risk claiming a gap-free stream we cannot vouch for.
+            counters.errors.history++
+            onError(error)
+            truncated = true
+          }
+        }
 
         if (backplane !== undefined && cursor !== undefined) {
           // Shared history, because the client may have reconnected to a different

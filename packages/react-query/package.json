@@ -1,6 +1,6 @@
 {
   "name": "@aghoz/react-query",
-  "version": "0.1.0-rc.0",
+  "version": "0.4.0",
   "description": "TanStack Query adapter for aghoz — map SSE topics onto query keys so live updates and missed updates both flow into the cache. Delete refetchInterval.",
   "keywords": [
     "server-sent-events",
@@ -37,7 +37,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -45,9 +48,7 @@
   },
   "peerDependencies": {
     "@tanstack/react-query": ">=5",
-    "react": ">=18"
-  },
-  "dependencies": {
+    "react": ">=18",
     "@aghoz/react": "workspace:*"
   },
   "devDependencies": {
@@ -60,6 +61,18 @@
     "jsdom": "^26.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@aghoz/react": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   }
 }

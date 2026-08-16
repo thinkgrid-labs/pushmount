@@ -260,12 +260,30 @@ impl Hub {
         let (checkpoint, replay) = match cursor {
             None => (Checkpoint::Absent, Vec::new()),
             Some(c) => {
-                // "Was anything dropped that this cursor had not already seen?" — the
-                // question §7.1 actually asks. See `History::last_trimmed` for why the
-                // oldest retained entry is the wrong thing to compare against. A cursor
-                // equal to the evicted id is NOT a gap: that is the event the client
-                // already holds, and everything after it is still here.
-                let truncated = self.history.last_trimmed().is_some_and(|t| c < t);
+                // Two ways a cursor can be one this hub cannot vouch for.
+                //
+                // Below what the ring evicted — "was anything dropped that this cursor had
+                // not already seen?", the question §7.1 actually asks. See
+                // `History::last_trimmed` for why the oldest *retained* entry is the wrong
+                // thing to compare against. A cursor equal to the evicted id is NOT a gap:
+                // that is the event the client already holds, and the rest is still here.
+                let evicted = self.history.last_trimmed().is_some_and(|t| c < t);
+
+                // Or *above* every id this hub has ever issued or recorded, which means
+                // the cursor came from somewhere this hub has never been — a previous
+                // life, most often. A restarted process has an empty ring and nothing
+                // trimmed, so the rule above alone answers "you missed nothing" to a
+                // client resuming across the restart, and everything published before the
+                // shutdown is gone with no one told. That is precisely the silent
+                // staleness §0 exists to eliminate, and it needs no configuration to
+                // detect: a hub that has never seen an id this high cannot possibly know
+                // what came after it.
+                //
+                // Costs nothing in normal operation, where a client's cursor is by
+                // construction an id this hub handed out.
+                let beyond = c > self.sequence.current();
+
+                let truncated = evicted || beyond;
                 let frames: Vec<Vec<u8>> =
                     self.history.since(c, &subscribed).map(|e| e.frame.clone()).collect();
                 (if truncated { Checkpoint::Earliest } else { Checkpoint::Echo(c) }, frames)

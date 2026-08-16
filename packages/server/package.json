@@ -1,6 +1,6 @@
 {
   "name": "@aghoz/server",
-  "version": "0.1.0-rc.0",
+  "version": "0.4.0",
   "description": "In-process real-time server push over Server-Sent Events (SSE) for Node.js and Express — mounts as a route so your existing auth runs first. Gap detection, zero dependencies.",
   "keywords": [
     "server-sent-events",
@@ -37,7 +37,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -51,5 +54,16 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   }
 }

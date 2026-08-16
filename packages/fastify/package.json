@@ -1,6 +1,6 @@
 {
   "name": "@aghoz/fastify",
-  "version": "0.1.0-rc.0",
+  "version": "0.4.0",
   "description": "Fastify adapter for aghoz — real-time server push over Server-Sent Events (SSE), mounted as a route inside your existing Fastify app.",
   "keywords": [
     "server-sent-events",
@@ -35,14 +35,18 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.json && node --test"
   },
   "peerDependencies": {
-    "fastify": ">=4"
+    "fastify": ">=4",
+    "@aghoz/server": "workspace:*"
   },
   "devDependencies": {
     "@aghoz/server": "workspace:*",
@@ -52,5 +56,16 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   }
 }

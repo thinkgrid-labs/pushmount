@@ -21,3 +21,12 @@ export {
 } from './client.js'
 
 export { SseParser, compareIds, type ParsedEvent } from './parser.js'
+
+export {
+  SharedClient,
+  createSharedClient,
+  type AghozClient,
+  type SharedClientOptions,
+  type Channel,
+  type LockManager,
+} from './shared.js'

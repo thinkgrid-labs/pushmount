@@ -44,7 +44,11 @@ export async function registerAghoz(
   fastify.get(path, stream)
   fastify.get(`${path}/cursor`, async (_req: FastifyRequest, reply: FastifyReply) => {
     reply.header('cache-control', 'no-store')
-    return { cursor: options.hub.cursor() }
+    // §5 — the shared sequence's answer where there is one, matching what the Node
+    // `cursorHandler` serves. A per-process cursor from a worker that has just joined the
+    // cluster is `0-0`, and a page stamped with it is answered by the stream with a gap.
+    await options.hub.ready()
+    return { cursor: await options.hub.sharedCursor() }
   })
 }
 

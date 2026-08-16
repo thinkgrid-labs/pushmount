@@ -2,7 +2,9 @@
 //!
 //! Every language binding targets this surface — napi for Node, PyO3 or ctypes for
 //! Python, cgo for Go, FFI for Ruby. It is the expensive thing to change, so it is
-//! deliberately small: a handle, three operations, and accessors for what they return.
+//! deliberately small: a handle, five operations (publish, append, encode, subscribe and
+//! the backpressure reports) and accessors for what they return. See `ADAPTERS.md` for
+//! how a binding is expected to use them.
 //!
 //! Three rules hold everywhere in this file, and breaking any of them is a soundness
 //! bug rather than a style question:
@@ -115,7 +117,12 @@ pub const AG_GAP_SLOW_CONSUMER: i32 = 1;
 /// **3100** added [`ag_note_sent`] and [`ag_note_flushed`], so §8.2 is reachable from a
 /// host that cannot report an absolute socket depth. A *minor* bump: both are new symbols
 /// returning existing status codes, so a 3000-era caller keeps working untouched.
-pub const AG_ABI_VERSION: u32 = 3_100;
+///
+/// **3200** added [`ag_compare_ids`]. Also minor, and also additive: a host that keeps
+/// persistent history has to decide whether a cursor predates what its storage threw
+/// away, and §2.1 forbids comparing ids as strings — so without this every binding would
+/// have to reimplement the one comparison the corpus exists to keep identical.
+pub const AG_ABI_VERSION: u32 = 3_200;
 
 // ---------------------------------------------------------------------- types
 
@@ -682,6 +689,40 @@ fn buffer_code(verdict: BufferVerdict) -> i32 {
         BufferVerdict::SlowConsumer => AG_BUFFER_SLOW_CONSUMER,
         BufferVerdict::Unknown => AG_BUFFER_UNKNOWN,
     }
+}
+
+/// §2.1 — compares two ids, writing -1, 0 or 1 through `out`.
+///
+/// Exposed because a host genuinely needs it and must not reimplement it. Ids MUST NOT be
+/// compared as strings — `1755083412345-10` sorts before `1755083412345-7` — and a host
+/// that got this wrong would silently discard live events as already-seen. The persistent-
+/// history path is the first caller: it has to decide whether a cursor predates what its
+/// storage compacted away.
+///
+/// Returns [`AG_ERR_MALFORMED_ID`] if either side is not a canonical `<ms>-<seq>`.
+#[no_mangle]
+pub extern "C" fn ag_compare_ids(a: ag_str, b: ag_str, out: *mut i32) -> i32 {
+    if out.is_null() {
+        return AG_ERR_NULL;
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let a = match unsafe { read_id(&a) } {
+            Ok(id) => id,
+            Err(code) => return code,
+        };
+        let b = match unsafe { read_id(&b) } {
+            Ok(id) => id,
+            Err(code) => return code,
+        };
+        let ordering = match a.cmp(&b) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        };
+        unsafe { *out = ordering };
+        AG_OK
+    }));
+    result.unwrap_or(AG_ERR_PANIC)
 }
 
 /// Removes a subscriber. Idempotent — returns 1 if it existed, 0 if not.
