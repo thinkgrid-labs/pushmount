@@ -422,3 +422,35 @@ test('append and encode agree with publish byte-for-byte', options, async () => 
   assert.deepEqual(Buffer.from(appended.frame), Buffer.from(published.frame))
   assert.deepEqual(Buffer.from(encoded), Buffer.from(published.frame))
 })
+
+test('the native core exposes both backpressure styles, agreeing on the verdict', options, async () => {
+  const absolute = createNativeCore(native, { maxBufferBytes: 100 })
+  const delta = createNativeCore(native, { maxBufferBytes: 100 })
+  const a = absolute.subscribe(['t'], undefined, undefined).id
+  const d = delta.subscribe(['t'], undefined, undefined).id
+
+  // ABI 3100. Before it, §8.2 was reachable only from a host that could report an
+  // absolute socket depth — which ASGI, net/http and Swoole cannot.
+  assert.equal(absolute.noteBuffer(a, 100), 'ok', 'at the cap is not past it')
+  assert.equal(delta.noteSent(d, 100), 'ok')
+  assert.equal(absolute.noteBuffer(a, 101), 'slow-consumer')
+  assert.equal(delta.noteSent(d, 1), 'slow-consumer')
+
+  // Draining recovers, and an over-reported flush saturates instead of underflowing.
+  assert.equal(delta.noteFlushed(d, 101), 'ok')
+  assert.equal(delta.noteFlushed(d, 9999), 'ok')
+  assert.equal(delta.noteSent(d, 101), 'slow-consumer', 'the counter really is at zero')
+})
+
+test('the native core reports an unknown subscriber on every backpressure path', options, async () => {
+  const core = createNativeCore(native, { maxBufferBytes: 100 })
+  const id = core.subscribe(['t'], undefined, undefined).id
+  assert.equal(core.remove(id), true)
+  for (const call of [
+    () => core.noteBuffer(id, 1),
+    () => core.noteSent(id, 1),
+    () => core.noteFlushed(id, 1),
+  ]) {
+    assert.equal(call(), 'unknown')
+  }
+})

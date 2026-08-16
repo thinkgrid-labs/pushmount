@@ -71,7 +71,25 @@ export interface HubCore {
     key: string | undefined,
     cursor: string | undefined,
   ): SubscribeOutcome
+  /**
+   * §8.2 — the host reports a subscriber's *absolute* queued depth.
+   *
+   * Correct wherever the transport can be asked how much is outstanding, which is what
+   * `res.writableLength` gives Node. The handler in this package uses only this.
+   */
   noteBuffer(subscriber: number, queuedBytes: number): BufferKind
+  /**
+   * §8.2 — the delta alternative, for a host with no absolute depth to report.
+   *
+   * Part of the seam even though Node never calls it, because the seam's job is to be the
+   * shape every language binds to: ASGI, `net/http` and Swoole all backpressure by
+   * suspending rather than by exposing a queue depth, so without this pair §8.2 is
+   * unimplementable in most of the runtimes the C ABI exists for. Shares `noteBuffer`'s
+   * counter and threshold; do not mix the two styles on one subscriber.
+   */
+  noteSent(subscriber: number, bytes: number): BufferKind
+  /** §8.2 — bytes previously reported to `noteSent` have drained. */
+  noteFlushed(subscriber: number, bytes: number): BufferKind
   remove(subscriber: number): boolean
   cursor(): string
   connectionCount(): number

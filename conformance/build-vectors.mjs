@@ -20,8 +20,8 @@ const jp22 = '日'.repeat(22)   // 22 UTF-16 units, 66 UTF-8 bytes
 const vectors = {
   // Bumped whenever a vector's expected value changes or a group is added, so an adapter
   // can report which corpus it passes. 0.2 added `idParse` and `append`, and narrowed the
-  // id bound to 2^53-1 (DECISIONS.md D9).
-  version: '0.2',
+  // id bound to 2^53-1 (DECISIONS.md D9). 0.3 added `buffer` (D10).
+  version: '0.3',
   spec: 'PROTOCOL.md',
   note:
     'Frames are written as JSON strings; the wire bytes are their UTF-8 encoding. ' +
@@ -361,6 +361,68 @@ const vectors = {
       cursor: '1000-1',
     },
   ],
+
+  // ---- §8.2 backpressure ---------------------------------------------------
+  //
+  // Whether a subscriber that cannot drain its socket is dropped. Half the loss story:
+  // a subscriber left to starve diverges silently, which is the failure §0 exists to
+  // prevent, and one dropped too eagerly is a reconnect storm.
+  //
+  // Two ways to feed the same counter, because the absolute depth Node reads off
+  // `res.writableLength` is a question ASGI, net/http and Swoole cannot answer — they
+  // suspend instead of exposing a queue. Both must reach the same verdict from the same
+  // outstanding total, or identical traffic drops a subscriber in one language and not
+  // another. `ops` is applied in order to one subscriber on a fresh hub:
+  //
+  //   ["buffer",  n]   absolute outstanding depth
+  //   ["sent",    n]   n bytes handed to the transport
+  //   ["flushed", n]   n bytes confirmed drained
+  //
+  // `expected` is the verdict after each op.
+  buffer: [
+    {
+      id: 'B1', ref: '§8.2', desc: 'the cap is exclusive — a subscriber exactly at its budget is doing nothing wrong',
+      maxBufferBytes: 100,
+      ops: [['buffer', 99], ['buffer', 100], ['buffer', 101]],
+      expected: ['ok', 'ok', 'slow-consumer'],
+    },
+    {
+      id: 'B2', ref: '§8.2', desc: 'sent deltas accumulate to the same verdict the absolute depth would give',
+      maxBufferBytes: 100,
+      ops: [['sent', 60], ['sent', 40], ['sent', 1]],
+      expected: ['ok', 'ok', 'slow-consumer'],
+    },
+    {
+      id: 'B3', ref: '§8.2', desc: 'a flush brings a slow consumer back under the cap — draining is recovery, not a one-way door',
+      maxBufferBytes: 100,
+      ops: [['sent', 150], ['flushed', 100], ['sent', 40]],
+      expected: ['slow-consumer', 'ok', 'ok'],
+    },
+    {
+      id: 'B4', ref: '§8.2', desc: 'a flush for bytes never sent saturates at zero rather than underflowing to a huge total',
+      maxBufferBytes: 100,
+      ops: [['sent', 10], ['flushed', 9999], ['sent', 50]],
+      expected: ['ok', 'ok', 'ok'],
+    },
+    {
+      id: 'B5', ref: '§8.2', desc: 'an absolute report of zero clears the outstanding count',
+      maxBufferBytes: 100,
+      ops: [['buffer', 500], ['buffer', 0]],
+      expected: ['slow-consumer', 'ok'],
+    },
+    {
+      id: 'B6', ref: '§8.2', desc: 'a subscriber stays slow while it stays over — the verdict describes now, not a latch',
+      maxBufferBytes: 100,
+      ops: [['sent', 200], ['sent', 10], ['flushed', 5]],
+      expected: ['slow-consumer', 'slow-consumer', 'slow-consumer'],
+    },
+    {
+      id: 'B7', ref: '§8.2', desc: 'zero-byte reports are inert on both styles',
+      maxBufferBytes: 100,
+      ops: [['sent', 0], ['flushed', 0], ['buffer', 0]],
+      expected: ['ok', 'ok', 'ok'],
+    },
+  ],
 }
 
 writeFileSync(new URL('./vectors.json', import.meta.url), JSON.stringify(vectors, null, 2) + '\n')
@@ -368,5 +430,6 @@ console.log(
   `vectors.json written — ${vectors.encode.length} encode, ${vectors.topic.length} topic, ` +
   `${vectors.origin.length} origin, ${vectors.idOrder.length} id-order, ` +
   `${vectors.idParse.length} id-parse, ${vectors.monotonic.length} monotonic, ` +
-  `${vectors.checkpoint.length} checkpoint, ${vectors.append.length} append`
+  `${vectors.checkpoint.length} checkpoint, ${vectors.append.length} append, ` +
+  `${vectors.buffer.length} buffer`
 )

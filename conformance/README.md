@@ -7,7 +7,7 @@ implementation is a defensible position rather than a slow-motion divergence.
 ## Layout
 
 ```
-vectors.json         the corpus — 87 vectors in eight groups
+vectors.json         the corpus — 94 vectors in nine groups
 build-vectors.mjs    regenerates vectors.json
 runner.mjs           runs the corpus against any JavaScript implementation
 ```
@@ -38,6 +38,7 @@ The runner exits non-zero and prints expected-vs-actual for every divergence.
 | `monotonic` | 3 | §2.2 clock-regression handling |
 | `checkpoint` | 7 | §4.4 / §7.1 whether a reconnect is told it missed events |
 | `append` | 9 | §2 / §4.5 the externally-assigned-id path a backplane needs |
+| `buffer` | 7 | §8.2 the slow-consumer threshold, by absolute depth and by delta |
 
 ## Rules for adding vectors
 
@@ -77,6 +78,13 @@ whose failure message does not tell you what is wrong is worth very little at 3a
 - **A7** — `encode` must record nothing. Its whole reason for existing separately from
   `append` is that shared-history replay would otherwise push duplicates into the local
   ring, out of id order, on every reconnect.
+- **B1 / B2** — §8.2's threshold is strict, and it must be strict *both* ways of counting.
+  An inclusive comparison disconnects a subscriber sitting exactly at its budget and doing
+  nothing wrong; getting it right in one style and wrong in the other means the same
+  traffic drops a subscriber in Python and not in Node.
+- **B4** — an over-reported flush must saturate at zero. A count that underflows wraps to
+  the top of the range, which reads as a perfectly healthy subscriber at the exact moment
+  it is furthest behind — silent staleness reached from a different direction.
 - **O1** — `1755083412345-7` sorts before `1755083412345-10`. A string comparison gets
   this backwards, and the failure mode is a client silently discarding live events as
   already-seen.

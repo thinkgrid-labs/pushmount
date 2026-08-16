@@ -157,6 +157,30 @@ check('every conformance vector carries a description', () => {
 })
 
 // ---------------------------------------------------------------------------
+check('every HTTP scenario carries a description and does something', () => {
+  const corpus = json('conformance/http/scenarios.json')
+  const groups = Object.keys(corpus).filter((k) => Array.isArray(corpus[k]))
+  const bad = []
+  for (const group of groups) {
+    for (const scenario of corpus[group]) {
+      if (typeof scenario.desc !== 'string' || scenario.desc.length < 8) {
+        bad.push(`${group}/${scenario.id}: no description`)
+      }
+      // A scenario with no assertion passes against every implementation, including one
+      // that does nothing at all — which is worse than having no scenario, because it
+      // reports coverage that does not exist.
+      const asserts = (scenario.steps ?? []).some(
+        (s) => s.op.startsWith('expect') || s.op === 'get-cursor' || s.expect !== undefined,
+      )
+      if (!asserts) bad.push(`${group}/${scenario.id}: asserts nothing`)
+    }
+  }
+  if (bad.length > 0) throw new Error(bad.join(', '))
+  const total = groups.reduce((n, g) => n + corpus[g].length, 0)
+  return `${total} scenarios across ${groups.length} groups`
+})
+
+// ---------------------------------------------------------------------------
 check('the README states the exclusions before the install line', () => {
   // Serverless and multi-process are the two ways someone wastes an afternoon before
   // discovering this is the wrong tool. They belong above the fold, permanently.

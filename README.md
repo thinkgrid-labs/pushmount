@@ -725,12 +725,14 @@ size. The core is ~915 lines and every one of them is pinned by the conformance 
 the HTTP layer above it is ~950 lines and the corpus does not reach a single one. Until
 that changes, "a binding rather than a rewrite" is a claim about half the work.
 
-- **`ADAPTERS.md`** — the porting contract, plus an `abi/README.md` covering ownership,
-  threading and the version check. §4 states its requirements as MUSTs; what it does not
-  state is that they have an *order*, and the order is the part that only fails in
-  production. Register before you await, register teardown before you await, re-check the
-  connection after it, delete from the map before `end()`, never write a frame before the
-  headers. Each step names the failure it prevents.
+- ~~**`ADAPTERS.md`** — the porting contract.~~ — **Shipped** as
+  [ADAPTERS.md](./ADAPTERS.md). §4 states its requirements as MUSTs; what it does not state
+  is that they have an *order*, and the order is the part that only fails in production.
+  Register before you await, register teardown before you await, re-check the connection
+  after it, delete from the map before ending the response, never write a frame before the
+  headers. Each step names the failure it prevents and links the scenario that catches it.
+  Also covers which runtimes can host a hub at all, and which of the two backpressure
+  styles to bind.
 - ~~**The first hole in the C ABI: no backplane outside Node.**~~ — **Shipped** as
   `ag_append` and `ag_encode` at **`AG_ABI_VERSION` 3000** (DECISIONS.md D9). Both take the
   id as canonical `<ms>-<seq>` *text* rather than split halves, so §2.1's parsing rule
@@ -738,20 +740,25 @@ that changes, "a binding rather than a rewrite" is a claim about half the work.
   caught a second real divergence — §2 said ids were "unsigned 64-bit", which no IEEE-754
   host can represent, so the Rust core accepted cursors the TypeScript core refused. §2 is
   now bounded at 2^53 − 1. The corpus gained two groups and went **57 → 87 vectors**.
-- **The second hole: a backpressure signal that is not Node-shaped.** §8.2 is fed by
-  `res.writableLength` — an absolute queue depth that ASGI, `net/http` and Swoole do not
-  offer, because they backpressure by suspending instead. The core should also accept
-  bytes-handed-over minus bytes-flushed and do the subtraction itself: one verdict rule,
-  two ways of feeding it, both still in Rust.
-- **An HTTP conformance suite.** The corpus covers `encode`, `topic`, `origin`,
-  `idOrder`, `monotonic` and `checkpoint` — all pure functions of the core, and so all
-  already identical everywhere by construction. An adapter can pass 57/57 and still omit
-  a header, compute the checkpoint after an interleaved publish, answer 403 where 429
-  belongs, or leak a subscriber on abort. This is a black-box scenario corpus driven over
-  real HTTP against a small reference app each adapter ships, and it is what turns "write
-  your own adapter" from an invitation into a contract. Seed it with the bugs already paid
-  for: a publish landing during backplane replay, an abort mid-replay, a deliberate drop
-  whose recorded cause must not be `client`.
+- ~~**The second hole: a backpressure signal that is not Node-shaped.**~~ — **Shipped** as
+  `ag_note_sent` / `ag_note_flushed` at **`AG_ABI_VERSION` 3100** (DECISIONS.md D10). §8.2
+  was fed only by `res.writableLength`, an absolute queue depth that ASGI, `net/http` and
+  Swoole cannot offer because they backpressure by suspending — so slow-consumer
+  detection, half of the loss story, was unimplementable in Python, Go and PHP. The core
+  now also accepts bytes-sent minus bytes-flushed and does the subtraction itself,
+  saturating in both directions. One verdict rule, two ways of feeding it, both in Rust.
+  §8.2's threshold had never been in the corpus at all; it is now a ninth group, **87 → 94
+  vectors**.
+- ~~**An HTTP conformance suite.**~~ — **Shipped** as
+  [conformance/http/](./conformance/http/): **41 scenarios in seven groups**, driven over a
+  real socket against a small reference app each adapter provides. The vector corpus covers
+  only pure functions of the core, which every implementation gets identically by linking
+  the same Rust; an adapter could pass 94/94 and still omit a header, compute the checkpoint
+  after an interleaved publish, answer 403 where 429 belongs, or leak a subscriber on abort.
+  Seeded with the bugs already paid for — a publish landing during backplane replay, an
+  abort mid-replay, a deliberate drop whose recorded cause must not be `client`. The clock
+  is pinned so frames compare byte-for-byte. Each scenario was confirmed to fail against a
+  deliberately broken handler before it was allowed to pass.
 - **Go via cgo, as the proof.** Not for Go adoption — because Go is the only candidate not
   gated behind the backplane work above (one process, goroutines, no shared log needed to
   be honest), so it is the cheapest way to discover that the checklist is wrong somewhere.
@@ -849,10 +856,15 @@ reach only the subscribers authorized for it.
 
 - [PROTOCOL.md](./PROTOCOL.md) — the normative wire format: framing, ids, topics,
   cursors, control frames, the checkpoint header.
+- [ADAPTERS.md](./ADAPTERS.md) — how to bring aghoz to another language: which runtimes
+  can host a hub, what the C ABI gives you, and the ordered checklist for the HTTP layer
+  you write yourself.
 - [DECISIONS.md](./DECISIONS.md) — every significant decision with its evidence,
   including the two that were reversed by measurement.
 - [conformance/](./conformance/) — the language-neutral vector corpus both the
   TypeScript and Rust implementations run.
+- [conformance/http/](./conformance/http/) — the HTTP suite: the same contract applied to
+  the layer each language rewrites, over a real socket.
 - [examples/express-react](./examples/express-react) — the end-to-end example app.
 
 ---

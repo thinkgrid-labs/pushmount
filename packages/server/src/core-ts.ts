@@ -101,6 +101,14 @@ export function createTsCore(config: CoreConfig = {}): HubCore {
       return registry.noteBuffer(subscriber, queuedBytes)
     },
 
+    noteSent(subscriber, bytes): BufferKind {
+      return registry.noteSent(subscriber, bytes)
+    },
+
+    noteFlushed(subscriber, bytes): BufferKind {
+      return registry.noteFlushed(subscriber, bytes)
+    },
+
     remove(subscriber) {
       return registry.remove(subscriber)
     },

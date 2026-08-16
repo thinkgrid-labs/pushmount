@@ -111,7 +111,11 @@ pub const AG_GAP_SLOW_CONSUMER: i32 = 1;
 /// major bump rather than a minor one because [`AG_ERR_MALFORMED_ID`] is a status a
 /// version-2000 caller has no arm for. Broken deliberately while nothing has shipped and
 /// no binding exists; the alternative was a shim living forever.
-pub const AG_ABI_VERSION: u32 = 3_000;
+///
+/// **3100** added [`ag_note_sent`] and [`ag_note_flushed`], so §8.2 is reachable from a
+/// host that cannot report an absolute socket depth. A *minor* bump: both are new symbols
+/// returning existing status codes, so a 3000-era caller keeps working untouched.
+pub const AG_ABI_VERSION: u32 = 3_100;
 
 // ---------------------------------------------------------------------- types
 
@@ -633,21 +637,51 @@ pub extern "C" fn ag_subscribe_result_free(result: *mut ag_subscribe_result) {
 
 // ------------------------------------------------------------- subscriber ops
 
-/// Reports a subscriber's queued byte depth. Returns a `AG_BUFFER_*` constant.
+/// Reports a subscriber's *absolute* queued byte depth. Returns a `AG_BUFFER_*` constant.
 ///
-/// Absolute depth, not a delta: the socket is the only thing that knows what is truly
-/// outstanding, and add/subtract accounting drifts the first time a write is partially
-/// flushed.
+/// Prefer this wherever the transport can be asked how much is outstanding — then the
+/// socket is the authority and no accounting can drift away from it. Node's
+/// `res.writableLength` is exactly that.
+///
+/// Hosts that cannot answer that question use [`ag_note_sent`] / [`ag_note_flushed`].
 #[no_mangle]
 pub extern "C" fn ag_note_buffer(hub: *mut ag_hub, subscriber: u64, queued_bytes: u64) -> i32 {
-    let code = with_hub(hub, |h| {
-        match h.note_buffer(SubscriberId(subscriber), queued_bytes as usize) {
-            BufferVerdict::Ok => AG_BUFFER_OK,
-            BufferVerdict::SlowConsumer => AG_BUFFER_SLOW_CONSUMER,
-            BufferVerdict::Unknown => AG_BUFFER_UNKNOWN,
-        }
-    });
-    code
+    with_hub(hub, |h| {
+        buffer_code(h.note_buffer(SubscriberId(subscriber), queued_bytes as usize))
+    })
+}
+
+/// Reports that `bytes` were handed to the transport, for a host with no absolute depth.
+///
+/// ASGI's `await send()` suspends until the transport accepts the data and returns
+/// nothing; neither Go's `http.ResponseWriter` nor Swoole exposes a queue depth. Without
+/// this pair, §8.2 — half of the loss story this protocol exists for — is unimplementable
+/// in most of the runtimes this ABI was built to serve.
+///
+/// Pair every call with [`ag_note_flushed`] once the bytes have drained. Saturating in
+/// both directions, so neither a missed flush nor a double-counted one can wrap the
+/// counter and invert the verdict. Returns a `AG_BUFFER_*` constant.
+#[no_mangle]
+pub extern "C" fn ag_note_sent(hub: *mut ag_hub, subscriber: u64, bytes: u64) -> i32 {
+    with_hub(hub, |h| buffer_code(h.note_sent(SubscriberId(subscriber), bytes as usize)))
+}
+
+/// Reports that `bytes` previously passed to [`ag_note_sent`] have drained.
+///
+/// Saturates at zero rather than underflowing: a flush reported for bytes never sent must
+/// leave a caught-up subscriber caught up, not `usize::MAX` bytes behind.
+#[no_mangle]
+pub extern "C" fn ag_note_flushed(hub: *mut ag_hub, subscriber: u64, bytes: u64) -> i32 {
+    with_hub(hub, |h| buffer_code(h.note_flushed(SubscriberId(subscriber), bytes as usize)))
+}
+
+/// One mapping for all three backpressure entry points, so they cannot disagree.
+fn buffer_code(verdict: BufferVerdict) -> i32 {
+    match verdict {
+        BufferVerdict::Ok => AG_BUFFER_OK,
+        BufferVerdict::SlowConsumer => AG_BUFFER_SLOW_CONSUMER,
+        BufferVerdict::Unknown => AG_BUFFER_UNKNOWN,
+    }
 }
 
 /// Removes a subscriber. Idempotent — returns 1 if it existed, 0 if not.

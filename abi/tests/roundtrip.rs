@@ -549,3 +549,85 @@ fn an_out_of_order_append_never_drags_the_cursor_backwards() {
     assert_eq!((ms, seq), (1000, 4), "an older event must not rewind the cursor");
     ag_hub_free(hub);
 }
+
+// ------------------------------------------------- ABI 3100: delta backpressure
+
+/// Subscribes to topic `t` on a hub whose buffer cap is `max_buffer_bytes`.
+fn capped_sub(max_buffer_bytes: u64) -> (*mut ag_hub, u64) {
+    let config = ag_config { max_buffer_bytes, ..ag_config::default() };
+    let hub = ag_hub_new(&config);
+    let topics = [s("t")];
+    let mut sub: *mut ag_subscribe_result = std::ptr::null_mut();
+    assert_eq!(ag_subscribe(hub, topics.as_ptr(), 1, none(), 0, 0, 0, &mut sub), AG_OK);
+    let id = ag_subscribe_id(sub);
+    ag_subscribe_result_free(sub);
+    (hub, id)
+}
+
+#[test]
+fn sent_and_flushed_accumulate_toward_one_threshold() {
+    let (hub, id) = capped_sub(100);
+    assert_eq!(ag_note_sent(hub, id, 60), AG_BUFFER_OK);
+    assert_eq!(ag_note_sent(hub, id, 60), AG_BUFFER_SLOW_CONSUMER);
+    // Draining brings it back under, so a subscriber that catches up is kept.
+    assert_eq!(ag_note_flushed(hub, id, 100), AG_BUFFER_OK);
+    ag_hub_free(hub);
+}
+
+#[test]
+fn the_delta_path_reaches_the_same_verdict_as_the_absolute_one() {
+    let (absolute, a) = capped_sub(100);
+    let (delta, d) = capped_sub(100);
+    // §8.2's rule is about outstanding bytes; how a host arrived at the number must not
+    // change the answer, or the same traffic drops a subscriber in Python and not in Node.
+    assert_eq!(ag_note_buffer(absolute, a, 120), ag_note_sent(delta, d, 120));
+    ag_hub_free(absolute);
+    ag_hub_free(delta);
+}
+
+#[test]
+fn the_cap_is_exclusive_on_the_delta_path_too() {
+    let (hub, id) = capped_sub(100);
+    assert_eq!(ag_note_sent(hub, id, 100), AG_BUFFER_OK, "at the cap is not past it");
+    assert_eq!(ag_note_sent(hub, id, 1), AG_BUFFER_SLOW_CONSUMER);
+    ag_hub_free(hub);
+}
+
+#[test]
+fn an_over_reported_flush_cannot_underflow_the_counter() {
+    let (hub, id) = capped_sub(100);
+    assert_eq!(ag_note_sent(hub, id, 10), AG_BUFFER_OK);
+    // Wrapping here would put the subscriber usize::MAX bytes behind and drop it while
+    // it is entirely caught up.
+    assert_eq!(ag_note_flushed(hub, id, 9_999), AG_BUFFER_OK);
+    assert_eq!(ag_note_sent(hub, id, 1), AG_BUFFER_OK, "the counter really is at zero");
+    ag_hub_free(hub);
+}
+
+#[test]
+fn a_missed_flush_cannot_wrap_the_counter_to_zero() {
+    let (hub, id) = capped_sub(100);
+    assert_eq!(ag_note_sent(hub, id, u64::MAX), AG_BUFFER_SLOW_CONSUMER);
+    // Wrapping would read as a perfectly healthy subscriber at the moment it is furthest
+    // behind — the one failure mode worth engineering against here.
+    assert_eq!(ag_note_sent(hub, id, 4_096), AG_BUFFER_SLOW_CONSUMER);
+    ag_hub_free(hub);
+}
+
+#[test]
+fn every_backpressure_entry_point_answers_unknown_for_a_gone_subscriber() {
+    let (hub, id) = capped_sub(100);
+    assert_eq!(ag_remove(hub, id), 1);
+    // A write completing after teardown. All three must agree, or a host using one style
+    // silently misses a drop the other would have reported.
+    assert_eq!(ag_note_buffer(hub, id, 1), AG_BUFFER_UNKNOWN);
+    assert_eq!(ag_note_sent(hub, id, 1), AG_BUFFER_UNKNOWN);
+    assert_eq!(ag_note_flushed(hub, id, 1), AG_BUFFER_UNKNOWN);
+    ag_hub_free(hub);
+}
+
+#[test]
+fn the_delta_entry_points_reject_a_null_hub() {
+    assert_eq!(ag_note_sent(std::ptr::null_mut(), 1, 1), AG_ERR_NULL);
+    assert_eq!(ag_note_flushed(std::ptr::null_mut(), 1, 1), AG_ERR_NULL);
+}

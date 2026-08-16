@@ -51,6 +51,8 @@ interface NativeHub {
     cursor: string | undefined | null,
   ): { id: number; checkpoint: string; replay: Uint8Array[] }
   noteBuffer(subscriber: number, queuedBytes: number): string
+  noteSent(subscriber: number, bytes: number): string
+  noteFlushed(subscriber: number, bytes: number): string
   remove(subscriber: number): boolean
   cursor(): string
   connectionCount(): number
@@ -138,6 +140,14 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
 
     noteBuffer(subscriber, queuedBytes) {
       return hub.noteBuffer(subscriber, queuedBytes) as BufferKind
+    },
+
+    noteSent(subscriber, bytes) {
+      return hub.noteSent(subscriber, bytes) as BufferKind
+    },
+
+    noteFlushed(subscriber, bytes) {
+      return hub.noteFlushed(subscriber, bytes) as BufferKind
     },
 
     remove: (subscriber) => hub.remove(subscriber),

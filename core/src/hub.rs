@@ -275,13 +275,59 @@ impl Hub {
         Ok(SubscribeEffect { id, checkpoint, replay })
     }
 
-    /// §8.2 — the binding reports the socket's current queued depth; the hub decides.
+    /// §8.2 — the host reports a subscriber's *absolute* queued depth; the hub decides.
     ///
-    /// Absolute depth rather than deltas, because the socket is the only thing that
-    /// knows what is truly outstanding, and add/subtract accounting drifts the first
-    /// time a write is partially flushed.
+    /// The right call wherever the socket can be asked how much is outstanding, because
+    /// then the socket is the authority and no accounting can drift away from it. Node's
+    /// `res.writableLength` is exactly that, so the Node handler uses this and nothing
+    /// else.
+    ///
+    /// Hosts that cannot answer that question use [`Hub::note_sent`] and
+    /// [`Hub::note_flushed`] instead. The two styles share one counter and one threshold,
+    /// so the drop decision is identical either way; a host that has an absolute depth
+    /// should always prefer this one.
     pub fn note_buffer(&mut self, id: SubscriberId, queued_bytes: usize) -> BufferVerdict {
-        match self.registry.set_queued(id, queued_bytes) {
+        let queued = self.registry.set_queued(id, queued_bytes);
+        self.verdict(queued)
+    }
+
+    /// §8.2 — the host handed `bytes` to the transport but cannot say what is still
+    /// outstanding.
+    ///
+    /// This exists because the absolute depth [`Hub::note_buffer`] wants is a Node-shaped
+    /// question. ASGI has no equivalent: `await send()` suspends until the transport
+    /// accepts the data and returns nothing, and neither Go's `http.ResponseWriter` nor
+    /// Swoole exposes a queue depth either. Without this pair, §8.2 — half of the loss
+    /// story this protocol exists for — would be unimplementable in every runtime the C
+    /// ABI was built to serve.
+    ///
+    /// **On the drift this was once rejected over.** Delta accounting does drift against a
+    /// transport that reports partial writes, which is why Node must not use it. The hosts
+    /// that need it have no partial write to observe: `await send()` either completes for
+    /// the whole frame or the connection is gone, so the delta is always a whole frame and
+    /// there is no fractional flush to lose track of. The rejection was right about Node
+    /// and wrong as a general rule — see DECISIONS.md D10.
+    pub fn note_sent(&mut self, id: SubscriberId, bytes: usize) -> BufferVerdict {
+        let queued = self.registry.add_queued(id, bytes);
+        self.verdict(queued)
+    }
+
+    /// §8.2 — the host confirms `bytes` have drained.
+    ///
+    /// The counterpart to [`Hub::note_sent`]. Saturates at zero rather than underflowing,
+    /// so an over-reported flush cannot turn a caught-up subscriber into one that looks
+    /// `usize::MAX` bytes behind.
+    pub fn note_flushed(&mut self, id: SubscriberId, bytes: usize) -> BufferVerdict {
+        let queued = self.registry.sub_queued(id, bytes);
+        self.verdict(queued)
+    }
+
+    /// One threshold, whichever way the counter was reached.
+    ///
+    /// Shared rather than repeated three times: §8.2's rule is "outstanding bytes exceed
+    /// the cap", and the way a host arrives at that number must not change the answer.
+    fn verdict(&self, queued: Option<usize>) -> BufferVerdict {
+        match queued {
             None => BufferVerdict::Unknown,
             Some(bytes) if bytes > self.config.max_buffer_bytes => BufferVerdict::SlowConsumer,
             Some(_) => BufferVerdict::Ok,
@@ -445,6 +491,94 @@ mod tests {
         assert!(h.append(id(5000, 0), "~gap", "x", None).is_err());
         assert_eq!(h.cursor(), EventId::ZERO, "a refused append must not move the cursor");
         assert_eq!(h.history_len(), 0);
+    }
+
+    fn capped(max_buffer_bytes: usize) -> Hub {
+        Hub::new(HubConfig { max_buffer_bytes, ..HubConfig::default() })
+    }
+
+    #[test]
+    fn the_two_backpressure_styles_reach_the_same_verdict() {
+        let mut absolute = capped(100);
+        let a = absolute.subscribe(vec!["t".into()], None, None).unwrap().id;
+        let mut delta = capped(100);
+        let d = delta.subscribe(vec!["t".into()], None, None).unwrap().id;
+
+        // 60 outstanding, then 120 — reported as a running total by one host and as two
+        // writes by the other. §8.2's rule is about outstanding bytes, so the way the
+        // number was reached must not change the answer.
+        assert_eq!(absolute.note_buffer(a, 60), BufferVerdict::Ok);
+        assert_eq!(delta.note_sent(d, 60), BufferVerdict::Ok);
+
+        assert_eq!(absolute.note_buffer(a, 120), BufferVerdict::SlowConsumer);
+        assert_eq!(delta.note_sent(d, 60), BufferVerdict::SlowConsumer);
+    }
+
+    #[test]
+    fn a_flush_brings_a_subscriber_back_under_the_cap() {
+        let mut h = capped(100);
+        let id = h.subscribe(vec!["t".into()], None, None).unwrap().id;
+        assert_eq!(h.note_sent(id, 150), BufferVerdict::SlowConsumer);
+        assert_eq!(h.note_flushed(id, 100), BufferVerdict::Ok);
+    }
+
+    #[test]
+    fn the_cap_is_exclusive_on_both_paths() {
+        // §8.2 drops past the cap, not at it. An off-by-one here disconnects a subscriber
+        // that is exactly at its budget and doing nothing wrong.
+        let mut h = capped(100);
+        let id = h.subscribe(vec!["t".into()], None, None).unwrap().id;
+        assert_eq!(h.note_sent(id, 100), BufferVerdict::Ok);
+        assert_eq!(h.note_sent(id, 1), BufferVerdict::SlowConsumer);
+
+        let mut other = capped(100);
+        let id = other.subscribe(vec!["t".into()], None, None).unwrap().id;
+        assert_eq!(other.note_buffer(id, 100), BufferVerdict::Ok);
+        assert_eq!(other.note_buffer(id, 101), BufferVerdict::SlowConsumer);
+    }
+
+    #[test]
+    fn an_over_reported_flush_saturates_at_zero() {
+        let mut h = capped(100);
+        let id = h.subscribe(vec!["t".into()], None, None).unwrap().id;
+        h.note_sent(id, 10);
+        // More flushed than was ever sent — a double count, or a frame written before the
+        // subscriber registered. Underflowing here would wrap to usize::MAX and drop a
+        // subscriber that is completely caught up.
+        assert_eq!(h.note_flushed(id, 999), BufferVerdict::Ok);
+        assert_eq!(h.note_sent(id, 1), BufferVerdict::Ok, "the counter really is at zero");
+    }
+
+    #[test]
+    fn sending_saturates_rather_than_wrapping() {
+        let mut h = capped(100);
+        let id = h.subscribe(vec!["t".into()], None, None).unwrap().id;
+        h.note_sent(id, usize::MAX);
+        // Wrapping would read as a perfectly healthy subscriber at the exact moment it is
+        // furthest behind.
+        assert_eq!(h.note_sent(id, 4096), BufferVerdict::SlowConsumer);
+    }
+
+    #[test]
+    fn every_backpressure_path_reports_an_unknown_subscriber() {
+        let mut h = capped(100);
+        let ghost = SubscriberId(9999);
+        // A write that completed after teardown. All three must agree, or a host using
+        // one style leaks a drop the other would have reported.
+        assert_eq!(h.note_buffer(ghost, 1), BufferVerdict::Unknown);
+        assert_eq!(h.note_sent(ghost, 1), BufferVerdict::Unknown);
+        assert_eq!(h.note_flushed(ghost, 1), BufferVerdict::Unknown);
+    }
+
+    #[test]
+    fn removal_forgets_the_outstanding_count() {
+        let mut h = capped(100);
+        let id = h.subscribe(vec!["t".into()], None, None).unwrap().id;
+        h.note_sent(id, 500);
+        assert!(h.remove(id));
+        // A recycled counter would follow the id, but ids are never recycled — so the
+        // only correct answer for a gone subscriber is "unknown", not a stale total.
+        assert_eq!(h.note_sent(id, 1), BufferVerdict::Unknown);
     }
 
     #[test]

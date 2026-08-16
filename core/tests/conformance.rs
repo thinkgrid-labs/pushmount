@@ -6,7 +6,8 @@
 //! must never fork.
 
 use aghoz_core::{
-    encode_frame, validate_origin, validate_topic, Checkpoint, EventId, Hub, HubConfig,
+    encode_frame, validate_origin, validate_topic, BufferVerdict, Checkpoint, EventId, Hub,
+    HubConfig,
 };
 use serde_json::Value;
 
@@ -224,6 +225,62 @@ fn append_vectors() {
         if frames != want_frames || got_cursor != want_cursor {
             failures.push(format!(
                 "  {}  {}\n      expected: frames={want_frames:?} cursor={want_cursor}\n      actual:   frames={frames:?} cursor={got_cursor}",
+                v["id"].as_str().unwrap(),
+                v["desc"].as_str().unwrap()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// §8.2 — whether a subscriber that cannot drain its socket is dropped.
+///
+/// Two ways to feed one counter, because the absolute depth Node reads off
+/// `res.writableLength` is a question ASGI, `net/http` and Swoole cannot answer. Both must
+/// reach the same verdict from the same outstanding total, or identical traffic drops a
+/// subscriber in one language and not in another.
+#[test]
+fn buffer_vectors() {
+    let c = corpus();
+    let mut failures = Vec::new();
+    for v in c["buffer"].as_array().unwrap() {
+        let config = HubConfig {
+            max_buffer_bytes: v["maxBufferBytes"].as_u64().unwrap() as usize,
+            ..HubConfig::default()
+        };
+        let mut hub = Hub::new(config);
+        let id = hub.subscribe(vec!["t".to_string()], None, None).unwrap().id;
+
+        let got: Vec<&str> = v["ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|op| {
+                let a = op.as_array().unwrap();
+                let n = a[1].as_u64().unwrap() as usize;
+                let verdict = match a[0].as_str().unwrap() {
+                    "buffer" => hub.note_buffer(id, n),
+                    "sent" => hub.note_sent(id, n),
+                    "flushed" => hub.note_flushed(id, n),
+                    other => panic!("unknown op: {other}"),
+                };
+                match verdict {
+                    BufferVerdict::Ok => "ok",
+                    BufferVerdict::SlowConsumer => "slow-consumer",
+                    BufferVerdict::Unknown => "unknown",
+                }
+            })
+            .collect();
+
+        let want: Vec<&str> = v["expected"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap())
+            .collect();
+        if got != want {
+            failures.push(format!(
+                "  {}  {}\n      expected: {want:?}\n      actual:   {got:?}",
                 v["id"].as_str().unwrap(),
                 v["desc"].as_str().unwrap()
             ));

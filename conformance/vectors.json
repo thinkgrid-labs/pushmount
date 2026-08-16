@@ -1,5 +1,5 @@
 {
-  "version": "0.2",
+  "version": "0.3",
   "spec": "PROTOCOL.md",
   "note": "Frames are written as JSON strings; the wire bytes are their UTF-8 encoding. All line terminators are LF. Implementations MUST agree byte-for-byte.",
   "encode": [
@@ -898,6 +898,178 @@
         "id: 1000-1\nevent: t\norigin: tab-7\ndata: v\n\n"
       ],
       "cursor": "1000-1"
+    }
+  ],
+  "buffer": [
+    {
+      "id": "B1",
+      "ref": "§8.2",
+      "desc": "the cap is exclusive — a subscriber exactly at its budget is doing nothing wrong",
+      "maxBufferBytes": 100,
+      "ops": [
+        [
+          "buffer",
+          99
+        ],
+        [
+          "buffer",
+          100
+        ],
+        [
+          "buffer",
+          101
+        ]
+      ],
+      "expected": [
+        "ok",
+        "ok",
+        "slow-consumer"
+      ]
+    },
+    {
+      "id": "B2",
+      "ref": "§8.2",
+      "desc": "sent deltas accumulate to the same verdict the absolute depth would give",
+      "maxBufferBytes": 100,
+      "ops": [
+        [
+          "sent",
+          60
+        ],
+        [
+          "sent",
+          40
+        ],
+        [
+          "sent",
+          1
+        ]
+      ],
+      "expected": [
+        "ok",
+        "ok",
+        "slow-consumer"
+      ]
+    },
+    {
+      "id": "B3",
+      "ref": "§8.2",
+      "desc": "a flush brings a slow consumer back under the cap — draining is recovery, not a one-way door",
+      "maxBufferBytes": 100,
+      "ops": [
+        [
+          "sent",
+          150
+        ],
+        [
+          "flushed",
+          100
+        ],
+        [
+          "sent",
+          40
+        ]
+      ],
+      "expected": [
+        "slow-consumer",
+        "ok",
+        "ok"
+      ]
+    },
+    {
+      "id": "B4",
+      "ref": "§8.2",
+      "desc": "a flush for bytes never sent saturates at zero rather than underflowing to a huge total",
+      "maxBufferBytes": 100,
+      "ops": [
+        [
+          "sent",
+          10
+        ],
+        [
+          "flushed",
+          9999
+        ],
+        [
+          "sent",
+          50
+        ]
+      ],
+      "expected": [
+        "ok",
+        "ok",
+        "ok"
+      ]
+    },
+    {
+      "id": "B5",
+      "ref": "§8.2",
+      "desc": "an absolute report of zero clears the outstanding count",
+      "maxBufferBytes": 100,
+      "ops": [
+        [
+          "buffer",
+          500
+        ],
+        [
+          "buffer",
+          0
+        ]
+      ],
+      "expected": [
+        "slow-consumer",
+        "ok"
+      ]
+    },
+    {
+      "id": "B6",
+      "ref": "§8.2",
+      "desc": "a subscriber stays slow while it stays over — the verdict describes now, not a latch",
+      "maxBufferBytes": 100,
+      "ops": [
+        [
+          "sent",
+          200
+        ],
+        [
+          "sent",
+          10
+        ],
+        [
+          "flushed",
+          5
+        ]
+      ],
+      "expected": [
+        "slow-consumer",
+        "slow-consumer",
+        "slow-consumer"
+      ]
+    },
+    {
+      "id": "B7",
+      "ref": "§8.2",
+      "desc": "zero-byte reports are inert on both styles",
+      "maxBufferBytes": 100,
+      "ops": [
+        [
+          "sent",
+          0
+        ],
+        [
+          "flushed",
+          0
+        ],
+        [
+          "buffer",
+          0
+        ]
+      ],
+      "expected": [
+        "ok",
+        "ok",
+        "ok"
+      ]
     }
   ]
 }

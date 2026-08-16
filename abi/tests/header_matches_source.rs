@@ -76,6 +76,26 @@ fn every_header_declaration_exists_in_the_source() {
     );
 }
 
+/// The header names the current ABI revision in prose, and prose drifts.
+///
+/// A binding author reads that number to decide what to refuse to load. If it lags the
+/// constant, the header tells them a version the library does not speak — and the whole
+/// point of a version is that it is the one thing both sides agree on.
+#[test]
+fn the_header_names_the_current_abi_version() {
+    let declared = SOURCE
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("pub const AG_ABI_VERSION: u32 = "))
+        .and_then(|rest| rest.strip_suffix(';'))
+        .map(|v| v.replace('_', ""))
+        .expect("AG_ABI_VERSION must be declared in lib.rs");
+
+    assert!(
+        HEADER.contains(&format!("Currently {declared}")),
+        "aghoz.h must say \"Currently {declared}\" — it names a version the library does not speak",
+    );
+}
+
 #[test]
 fn status_codes_agree_between_source_and_header() {
     // A binding that reads -6 as "topic too long" would map a 429 to a 400.

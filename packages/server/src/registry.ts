@@ -18,6 +18,8 @@ export interface RegistryOptions {
   maxTopicsPerConnection?: number
 }
 
+export type BufferVerdict = 'ok' | 'slow-consumer' | 'unknown'
+
 export type AddResult =
   | { ok: true; id: number }
   | { ok: false; reason: 'max-connections' | 'max-connections-per-key' | 'too-many-topics' }
@@ -116,18 +118,52 @@ export class Registry {
   }
 
   /**
-   * §8.2 — the handler reports the socket's current queued byte count (Node's
+   * §8.2 — the handler reports the socket's *absolute* queued byte count (Node's
    * `res.writableLength`) after each write, and the registry decides.
    *
-   * Reporting the absolute depth rather than deltas is deliberate: the socket is the
-   * only thing that actually knows how much is outstanding, and add/subtract
-   * accounting drifts the moment a write is partially flushed.
+   * This is what the Node handler uses and what it should keep using: the socket is the
+   * only thing that truly knows how much is outstanding, so no accounting kept beside it
+   * can drift away from it.
+   *
+   * `noteSent`/`noteFlushed` are the alternative for hosts with no such number. They
+   * share this counter and this threshold, so the verdict is identical either way — but
+   * do not mix the two styles on one subscriber.
    */
-  noteBuffer(id: number, queuedBytes: number): 'ok' | 'slow-consumer' | 'unknown' {
+  noteBuffer(id: number, queuedBytes: number): BufferVerdict {
     const sub = this.#subs.get(id)
     if (sub === undefined) return 'unknown'
     sub.queued = queuedBytes
-    return queuedBytes > this.#maxBufferBytes ? 'slow-consumer' : 'ok'
+    return this.#verdict(queuedBytes)
+  }
+
+  /**
+   * §8.2 — `bytes` were handed to the transport, with no absolute depth available.
+   *
+   * Node never needs this; it exists so the TypeScript core stays a faithful second
+   * implementation of the rule a ctypes or cgo binding will drive through the C ABI.
+   * Clamped at zero on the way down and at `Number.MAX_SAFE_INTEGER` on the way up, so
+   * neither a missed flush nor a double-counted one can invert the verdict.
+   */
+  noteSent(id: number, bytes: number): BufferVerdict {
+    const sub = this.#subs.get(id)
+    if (sub === undefined) return 'unknown'
+    sub.queued = Math.min(sub.queued + bytes, Number.MAX_SAFE_INTEGER)
+    return this.#verdict(sub.queued)
+  }
+
+  /** §8.2 — `bytes` previously reported to `noteSent` have drained. */
+  noteFlushed(id: number, bytes: number): BufferVerdict {
+    const sub = this.#subs.get(id)
+    if (sub === undefined) return 'unknown'
+    // Saturating: a flush reported for bytes never sent must leave a caught-up
+    // subscriber caught up, not far enough "behind" to be dropped.
+    sub.queued = Math.max(sub.queued - bytes, 0)
+    return this.#verdict(sub.queued)
+  }
+
+  /** Past the cap, not at it — §8.2 drops a subscriber that exceeds its budget. */
+  #verdict(queued: number): BufferVerdict {
+    return queued > this.#maxBufferBytes ? 'slow-consumer' : 'ok'
   }
 
   topicsOf(id: number): readonly string[] {

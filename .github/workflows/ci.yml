@@ -86,6 +86,31 @@ jobs:
           node conformance/build-vectors.mjs
           git diff --exit-code conformance/vectors.json \
             || (echo "::error::vectors.json is out of sync with build-vectors.mjs" && exit 1)
+          node conformance/http/build-scenarios.mjs
+          git diff --exit-code conformance/http/scenarios.json \
+            || (echo "::error::scenarios.json is out of sync with build-scenarios.mjs" && exit 1)
+
+  # The other half of the corpus: the HTTP layer, driven over a real socket.
+  #
+  # vectors.json pins the protocol core, which every implementation gets by linking the
+  # same Rust. This pins the ~950 lines each language rewrites in full — statuses,
+  # headers, write order, teardown — and it is where every production bug in this project
+  # has come from. Its own job so a failure names itself in the checks list.
+  conformance-http:
+    name: http conformance (node adapter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm conformance:http
 
   # `core/` reads the same vectors.json the JavaScript runner does. Once the bindings
   # land (DECISIONS.md D3) this job is what proves every language agrees.

@@ -5,6 +5,84 @@ Newest first.
 
 ---
 
+## D10 — §8.2 gains a delta-counted backpressure path, reversing an earlier objection
+
+**Date:** 16 August 2026 · **Status:** accepted · **Amends:** the `note_buffer` rationale
+
+### What was there, and why it was not enough
+
+`note_buffer(id, queued_bytes)` takes the socket's **absolute** outstanding depth, and its
+comment argued against the alternative in one line:
+
+> Absolute depth rather than deltas, because the socket is the only thing that knows what
+> is truly outstanding, and add/subtract accounting drifts the first time a write is
+> partially flushed.
+
+That is correct, and it is correct about Node specifically. `res.writableLength` is an
+absolute depth, the socket is a better authority than anything kept beside it, and Node
+can observe partial writes — so delta accounting there would genuinely drift.
+
+It is wrong as a *general* rule, and the ABI inherited it as one. Most of the runtimes D3
+built the C ABI for cannot answer the question at all:
+
+| runtime | absolute queued depth? |
+|---|---|
+| Node (`res.writableLength`) | yes |
+| ASGI / Uvicorn (`await send()`) | no — suspends, returns nothing |
+| Go (`http.ResponseWriter`) | no |
+| Swoole | not in this shape |
+
+So §8.2 — half of the loss story this protocol exists for, and the thing that separates it
+from hand-rolled SSE — was unimplementable in Python, Go and PHP. An adapter there would
+have had to either skip slow-consumer detection entirely or invent its own threshold, and
+"invent your own" is precisely what the shared core exists to prevent.
+
+### Decision
+
+**Added `ag_note_sent` and `ag_note_flushed` alongside `ag_note_buffer`.** They feed the
+same counter and the same threshold, so the drop decision is identical whichever style a
+host uses. `AG_ABI_VERSION` 3000 → **3100** — a *minor* bump, because both are new symbols
+returning existing status codes and a 3000-era caller keeps working untouched.
+
+**The drift objection is answered rather than ignored.** It applies to a transport that
+reports partial writes, and the hosts that need the delta path do not have one: `await
+send()` either completes for the whole frame or the connection is gone. The delta is
+always a whole frame, so there is no fractional flush to lose track of. Node keeps the
+absolute path and should never move off it. The header says outright not to mix the two
+styles on one subscriber.
+
+**Saturating in both directions**, which is the part that matters at 3am. An over-reported
+flush must land on zero rather than underflow to `usize::MAX` — that would read as a
+subscriber unimaginably far behind and drop one that is entirely caught up. A missed flush
+must pin at the top rather than wrap to zero — that reads as a perfectly healthy
+subscriber at the exact moment it is furthest behind, which is silent staleness reached
+from a new direction.
+
+### A ninth corpus group, 87 → 94 vectors
+
+§8.2's threshold had never been in the corpus at all, despite being a rule two
+implementations already had to agree on. `buffer` (7) drives an ops list — `buffer` /
+`sent` / `flushed` — against one subscriber and pins the verdict after each.
+
+Verified the way D6 and D9 were, by breaking it first:
+
+- making the comparison inclusive (`>=`) fails **B1** and **B2** — `["ok",
+  "slow-consumer", ...]` where `["ok", "ok", ...]` was expected
+- making the subtraction wrapping instead of saturating fails **B4**
+
+PROTOCOL.md §8.2 now states the strictness of the comparison, defines "queued bytes" as
+written-and-not-drained, and requires an implementation that maintains the count itself to
+saturate rather than wrap. Corpus version 0.3.
+
+### Also closed: the header could name a version the library does not speak
+
+`aghoz.h` describes the current ABI revision in prose, and prose drifts. A binding author
+reads that number to decide what to refuse to load, so a stale one is worse than none.
+`the_header_names_the_current_abi_version` parses `AG_ABI_VERSION` out of the source and
+asserts the header says it. Confirmed to fail when the header lags.
+
+---
+
 ## D9 — The ABI grows an externally-assigned-id path, and ids are bounded at 2^53 − 1
 
 **Date:** 16 August 2026 · **Status:** accepted

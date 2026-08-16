@@ -95,8 +95,12 @@ typedef struct {
 
 /* major * 1000 + minor. Refuse to load a library whose major differs.
  *
+ * Currently 3100.
+ *
  * 3000 added ag_append and ag_encode. A major bump because AG_ERR_MALFORMED_ID is a
- * status a 2000-era caller has no arm for. */
+ * status a 2000-era caller has no arm for.
+ * 3100 added ag_note_sent and ag_note_flushed. A minor bump: new symbols returning
+ * existing status codes, so a 3000-era caller keeps working untouched. */
 uint32_t ag_abi_version(void);
 
 ag_hub *ag_hub_new(const ag_config *config); /* config may be NULL for all defaults */
@@ -167,9 +171,27 @@ void ag_subscribe_result_free(ag_subscribe_result *result);
 
 /* ---- subscriber operations ---------------------------------------------- */
 
-/* Reports the socket's current queued depth — absolute, not a delta. Returns a
- * AG_BUFFER_* verdict. */
+/* Reports the socket's current queued depth — ABSOLUTE, not a delta. Returns a
+ * AG_BUFFER_* verdict.
+ *
+ * Prefer this wherever the transport can be asked how much is outstanding, because then
+ * the socket is the authority and no accounting can drift away from it. Node's
+ * res.writableLength is exactly that. */
 int32_t ag_note_buffer(ag_hub *hub, uint64_t subscriber, uint64_t queued_bytes);
+
+/* The DELTA alternative, for a host with no absolute depth to report.
+ *
+ * ASGI's `await send()` suspends until the transport accepts the data and returns
+ * nothing; neither Go's http.ResponseWriter nor Swoole exposes a queue depth. Without
+ * these, §8.2 is unimplementable in most of the runtimes this ABI exists to serve.
+ *
+ * Report bytes handed to the transport with ag_note_sent, and report them again with
+ * ag_note_flushed once they have drained. Both share ag_note_buffer's counter and
+ * threshold, so the drop decision is identical whichever style a host uses — do not mix
+ * the two on one subscriber. Saturating in both directions: a missed flush cannot wrap
+ * the counter to zero, and a double-counted one cannot wrap it to the top. */
+int32_t ag_note_sent(ag_hub *hub, uint64_t subscriber, uint64_t bytes);
+int32_t ag_note_flushed(ag_hub *hub, uint64_t subscriber, uint64_t bytes);
 
 /* Idempotent. Returns 1 if the subscriber existed, 0 if not. */
 int32_t ag_remove(ag_hub *hub, uint64_t subscriber);

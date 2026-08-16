@@ -231,19 +231,32 @@ impl Hub {
         }
     }
 
-    /// Reports a subscriber's queued depth. Returns `"ok"`, `"slow-consumer"` or
-    /// `"unknown"`.
+    /// Reports a subscriber's *absolute* queued depth. Returns `"ok"`, `"slow-consumer"`
+    /// or `"unknown"`.
+    ///
+    /// What the Node handler uses, because `res.writableLength` is exactly this and the
+    /// socket is a better authority than any accounting kept alongside it.
     #[napi]
     pub fn note_buffer(&mut self, subscriber: u32, queued_bytes: f64) -> String {
-        match self
-            .inner
-            .note_buffer(SubscriberId(subscriber as u64), queued_bytes as usize)
-        {
-            BufferVerdict::Ok => "ok",
-            BufferVerdict::SlowConsumer => "slow-consumer",
-            BufferVerdict::Unknown => "unknown",
-        }
-        .to_string()
+        verdict_name(
+            self.inner
+                .note_buffer(SubscriberId(subscriber as u64), queued_bytes as usize),
+        )
+    }
+
+    /// Reports that `bytes` were handed to the transport, with no absolute depth known.
+    ///
+    /// Node does not need this — it is here so the corpus can drive the same rule through
+    /// this binding that a ctypes or cgo binding will drive through the C ABI.
+    #[napi]
+    pub fn note_sent(&mut self, subscriber: u32, bytes: f64) -> String {
+        verdict_name(self.inner.note_sent(SubscriberId(subscriber as u64), bytes as usize))
+    }
+
+    /// Reports that `bytes` previously passed to `noteSent` have drained.
+    #[napi]
+    pub fn note_flushed(&mut self, subscriber: u32, bytes: f64) -> String {
+        verdict_name(self.inner.note_flushed(SubscriberId(subscriber as u64), bytes as usize))
     }
 
     /// Removes a subscriber. Idempotent.
@@ -285,6 +298,16 @@ impl Hub {
     pub fn denied_frame(&self, topics: Vec<String>) -> Buffer {
         self.inner.denied_frame(&topics).into()
     }
+}
+
+/// One mapping for all three backpressure entry points, so they cannot disagree.
+fn verdict_name(verdict: BufferVerdict) -> String {
+    match verdict {
+        BufferVerdict::Ok => "ok",
+        BufferVerdict::SlowConsumer => "slow-consumer",
+        BufferVerdict::Unknown => "unknown",
+    }
+    .to_string()
 }
 
 /// §3 — exposed so the HTTP layer can reject a topic before opening a stream.

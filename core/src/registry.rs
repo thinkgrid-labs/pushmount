@@ -102,6 +102,30 @@ impl Registry {
         Some(bytes)
     }
 
+    /// Adds to the outstanding count, for a host that cannot report an absolute depth.
+    ///
+    /// Saturating, so a host that writes more than `usize::MAX` bytes without ever
+    /// reporting a flush pins the counter at the top rather than wrapping to zero — which
+    /// would read as a perfectly healthy subscriber at the exact moment it is furthest
+    /// behind.
+    pub(crate) fn add_queued(&mut self, id: SubscriberId, bytes: usize) -> Option<usize> {
+        let sub = self.subs.get_mut(&id)?;
+        sub.queued = sub.queued.saturating_add(bytes);
+        Some(sub.queued)
+    }
+
+    /// Subtracts from the outstanding count.
+    ///
+    /// Saturating for the same class of reason in the other direction: a host that
+    /// reports a flush for bytes it never reported sending — a double count, or a frame
+    /// written before the subscriber registered — must land on zero, not underflow to
+    /// `usize::MAX` and drop a subscriber that is entirely caught up.
+    pub(crate) fn sub_queued(&mut self, id: SubscriberId, bytes: usize) -> Option<usize> {
+        let sub = self.subs.get_mut(&id)?;
+        sub.queued = sub.queued.saturating_sub(bytes);
+        Some(sub.queued)
+    }
+
     pub(crate) fn topics_of(&self, id: SubscriberId) -> Option<&[String]> {
         self.subs.get(&id).map(|s| s.topics.as_slice())
     }

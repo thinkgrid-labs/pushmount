@@ -8,6 +8,7 @@ import {
   validTopic,
   compareIds as cmp,
 } from './hub.js'
+import { Registry, type BufferVerdict } from './registry.js'
 
 export { encodeFrame, validOrigin, validTopic }
 
@@ -18,6 +19,28 @@ export function compareIds(a: [number, number], b: [number, number]): number {
 /** §2.1 — whether a string is a canonical id at all. */
 export function validId(raw: string): boolean {
   return parseId(raw) !== null
+}
+
+/**
+ * §8.2 — one registered subscriber on a hub capped at `maxBufferBytes`.
+ *
+ * Separate from `newHub` because backpressure needs a subscriber to exist and a cap to
+ * be set, and folding both into the general hub would make every other group carry
+ * configuration it does not use.
+ */
+export function newBufferHub(maxBufferBytes: number): {
+  buffer(n: number): BufferVerdict
+  sent(n: number): BufferVerdict
+  flushed(n: number): BufferVerdict
+} {
+  const registry = new Registry({ maxBufferBytes })
+  const added = registry.add(['t'])
+  if (!added.ok) throw new Error(`could not register a subscriber: ${added.reason}`)
+  return {
+    buffer: (n) => registry.noteBuffer(added.id, n),
+    sent: (n) => registry.noteSent(added.id, n),
+    flushed: (n) => registry.noteFlushed(added.id, n),
+  }
 }
 
 export function newHub(maxHistoryBytes?: number): {

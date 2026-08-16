@@ -19,6 +19,16 @@ export const compareIds = ([msA, seqA], [msB, seqB]) =>
 
 export const validId = (raw) => native.validateId(raw)
 
+export function newBufferHub(maxBufferBytes) {
+  const hub = new native.Hub({ maxBufferBytes })
+  const { id } = hub.subscribe(['t'], undefined, undefined)
+  return {
+    buffer: (n) => hub.noteBuffer(id, n),
+    sent: (n) => hub.noteSent(id, n),
+    flushed: (n) => hub.noteFlushed(id, n),
+  }
+}
+
 export function newHub(maxHistoryBytes) {
   const hub = new native.Hub(maxHistoryBytes === undefined ? {} : { maxHistoryBytes })
   return {

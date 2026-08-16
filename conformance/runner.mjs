@@ -16,6 +16,10 @@
 //     checkpoint(cursor)                      -> 'absent' | 'echo' | 'earliest'
 //   }
 //     where `cursor` is null or [ms, seq], and `checkpoint` subscribes to topic 't'.
+//   newBufferHub(maxBufferBytes)         -> {
+//     buffer(n) | sent(n) | flushed(n)        -> 'ok' | 'slow-consumer' | 'unknown'
+//   }
+//     one subscriber, already registered, on a hub capped at `maxBufferBytes`.
 //
 // Exits non-zero on any divergence. This is the gate PROTOCOL.md §12 describes; it is
 // the only thing that makes more than one implementation of the hub safe.
@@ -143,6 +147,25 @@ for (const v of vectors.checkpoint) {
     actual = `threw: ${e.message}`
   }
   check(v.id, v.desc, v.expected, actual)
+}
+
+// ---- §8.2 backpressure
+for (const v of vectors.buffer) {
+  let actual
+  try {
+    const hub = impl.newBufferHub(v.maxBufferBytes)
+    const verdicts = []
+    for (const [kind, n] of v.ops) {
+      if (kind === 'buffer') verdicts.push(hub.buffer(n))
+      else if (kind === 'sent') verdicts.push(hub.sent(n))
+      else if (kind === 'flushed') verdicts.push(hub.flushed(n))
+      else throw new Error(`unknown op: ${kind}`)
+    }
+    actual = verdicts.join(',')
+  } catch (e) {
+    actual = `threw: ${e.message}`
+  }
+  check(v.id, v.desc, v.expected.join(','), actual)
 }
 
 // ---- report

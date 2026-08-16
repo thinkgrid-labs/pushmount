@@ -123,3 +123,62 @@ test('buffer reports for an unknown subscriber are distinguishable from healthy 
   // A write completing after teardown must not read as 'ok' and resurrect anything.
   assert.equal(r.noteBuffer(s.id, 0), 'unknown')
 })
+
+// §8.2 — the delta pair, for hosts with no absolute socket depth to report.
+//
+// Node never uses these: `res.writableLength` is an absolute depth and the socket is a
+// better authority than any accounting kept beside it. They exist because ASGI, net/http
+// and Swoole all backpressure by suspending instead of exposing a queue, so without them
+// §8.2 is unimplementable in most of the runtimes the C ABI exists to serve. The
+// TypeScript core implements them to stay a faithful second implementation of the rule.
+
+test('sent deltas accumulate to the same verdict an absolute report would give', () => {
+  const delta = new Registry({ maxBufferBytes: 1000 })
+  const absolute = new Registry({ maxBufferBytes: 1000 })
+  const d = delta.add(['a'])
+  const a = absolute.add(['a'])
+  assert.ok(d.ok && a.ok)
+
+  assert.equal(delta.noteSent(d.id, 600), 'ok')
+  assert.equal(delta.noteSent(d.id, 400), 'ok', 'at the limit is not over it')
+  assert.equal(delta.noteSent(d.id, 1), 'slow-consumer')
+
+  // The same outstanding totals, reported the other way. §8.2 is a rule about
+  // outstanding bytes, so how a host arrived at the number must not change the answer.
+  assert.equal(absolute.noteBuffer(a.id, 600), 'ok')
+  assert.equal(absolute.noteBuffer(a.id, 1000), 'ok')
+  assert.equal(absolute.noteBuffer(a.id, 1001), 'slow-consumer')
+})
+
+test('a flush brings a slow consumer back under the cap', () => {
+  const r = new Registry({ maxBufferBytes: 100 })
+  const s = r.add(['a'])
+  assert.ok(s.ok)
+  assert.equal(r.noteSent(s.id, 150), 'slow-consumer')
+  // Draining is recovery, not a one-way door — the verdict describes now, not a latch.
+  assert.equal(r.noteFlushed(s.id, 100), 'ok')
+  assert.equal(r.noteSent(s.id, 50), 'ok')
+})
+
+test('a flush for bytes never sent saturates at zero rather than going negative', () => {
+  const r = new Registry({ maxBufferBytes: 100 })
+  const s = r.add(['a'])
+  assert.ok(s.ok)
+  r.noteSent(s.id, 10)
+  // A double count, or a frame written before the subscriber registered. Going negative
+  // here would let the next 100 bytes of real backlog read as healthy.
+  assert.equal(r.noteFlushed(s.id, 9999), 'ok')
+  assert.equal(r.noteSent(s.id, 101), 'slow-consumer', 'the counter really is at zero')
+})
+
+test('the delta pair reports an unknown subscriber like noteBuffer does', () => {
+  const r = new Registry({ maxBufferBytes: 10 })
+  const s = r.add(['a'])
+  assert.ok(s.ok)
+  r.remove(s.id)
+  // All three must agree, or a host using one style silently misses a drop the other
+  // would have reported.
+  assert.equal(r.noteBuffer(s.id, 0), 'unknown')
+  assert.equal(r.noteSent(s.id, 1), 'unknown')
+  assert.equal(r.noteFlushed(s.id, 1), 'unknown')
+})

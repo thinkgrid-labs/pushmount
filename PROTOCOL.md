@@ -458,9 +458,20 @@ their gap callback **at most once per connection attempt** even when both arrive
 
 ### 8.2 `slow-consumer`
 
-A subscriber whose queued bytes exceed `maxBufferBytes` is disconnected rather than left
-to starve. The server MUST attempt to write `~gap` with reason `slow-consumer` before
+A subscriber whose queued bytes **exceed** `maxBufferBytes` is disconnected rather than
+left to starve. The comparison is strict: a subscriber sitting exactly at its budget is
+within it. The server MUST attempt to write `~gap` with reason `slow-consumer` before
 closing.
+
+"Queued bytes" means bytes written to the transport and not yet drained. How an
+implementation learns that number is not specified, because runtimes differ on whether it
+can be asked for at all — Node exposes it directly as `res.writableLength`, while ASGI,
+Go's `http.ResponseWriter` and Swoole apply backpressure by suspending the write instead.
+An implementation on a runtime of the second kind MUST maintain the count itself, adding
+bytes as they are handed to the transport and subtracting them as they drain, and MUST
+saturate rather than wrap in both directions: a count that underflows reads as a healthy
+subscriber at the moment it is furthest behind. Whichever way the number is obtained, the
+threshold above decides.
 
 > **This write is best-effort and MUST be documented as such.** The buffer is by definition
 > already full, so the frame may never reach the client. The *guaranteed* detection is the
