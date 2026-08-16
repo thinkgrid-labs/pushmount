@@ -475,6 +475,47 @@ test('the origin skip works when the leader itself is the writer', async () => {
 
 // ------------------------------------------------------------------- lifecycle
 
+// Three tabs, three different topics — the shape that exposes what two identical tabs
+// cannot. Only the leader tracks who wants what, so a promoted tab starts from its own
+// topics alone; the tabs that did not move never announced themselves to it, and their
+// topics silently leave the union. They keep their state, their cursor and their open
+// callbacks. They simply stop receiving, which is the failure §0 exists to eliminate.
+test('a promotion keeps the topics of the tabs that did not move', async () => {
+  const s = await boot()
+  const { tabs, closeAll } = openTabs(3, s.url)
+  try {
+    const alpha = []
+    const beta = []
+    const gamma = []
+    tabs[0].subscribe('alpha', (d) => alpha.push(d))
+    tabs[1].subscribe('beta', (d) => beta.push(d))
+    tabs[2].subscribe('gamma', (d) => gamma.push(d))
+
+    await until(() => tabs.every((t) => t.state === 'open'), 3000, 'open')
+    await tick(120)
+    await s.hub.publish('gamma', 'before')
+    await until(() => gamma.length === 1, 3000, 'the third tab receives while the first leads')
+
+    const leader = leaderOf(tabs)
+    const survivors = tabs.filter((t) => t !== leader)
+    leader.close()
+    await until(() => survivors.some((t) => t.isLeader), 3000, 'promotion')
+    const promoted = survivors.find((t) => t.isLeader)
+    const bystander = survivors.find((t) => t !== promoted)
+    await until(() => promoted.state === 'open', 3000, 'the new leader connects')
+    await tick(200)
+
+    await s.hub.publish('beta', 'B')
+    await s.hub.publish('gamma', 'G')
+    await until(() => beta.length + gamma.length === 3, 3000, 'both survivors still receive')
+    assert.equal(bystander.state, 'open', 'and the bystander never learned anything was wrong')
+    assert.equal(s.hub.stats().connections, 1, 'still one connection')
+  } finally {
+    closeAll()
+    await s.close()
+  }
+})
+
 test('closing a follower drops its topics from the shared subscription', async () => {
   const s = await boot()
   const { tabs, closeAll } = openTabs(2, s.url)
@@ -537,11 +578,70 @@ test('close() is idempotent and releases the lock for the next tab', async () =>
   }
 })
 
-test('a hub with no locks available refuses rather than guessing at an election', async () => {
+test('a client with no locks available refuses rather than guessing at an election', async () => {
   // Degrading to a heartbeat would reintroduce silent staleness: too long a timeout and
   // every tab is blind after a crash, which is the failure the library exists to remove.
-  assert.throws(
-    () => createSharedClient({ url: 'http://127.0.0.1:1/events', locks: undefined, channel: () => new BroadcastChannel('nope') }),
-    /navigator\.locks/,
-  )
+  //
+  // The ambient `navigator` is stubbed for the duration rather than relied upon. Node 22
+  // has a `navigator` with no `locks` on it, Node 24 ships the real Web Locks API, and a
+  // test whose meaning depends on which one it happens to run under is not testing the
+  // library — it caught exactly that, passing on 22 and failing on 24.
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true })
+  const channels = []
+  try {
+    assert.throws(
+      () =>
+        createSharedClient({
+          url: 'http://127.0.0.1:1/events',
+          channel: () => {
+            const c = new BroadcastChannel('nope')
+            channels.push(c)
+            return c
+          },
+        }),
+      /navigator\.locks/,
+    )
+    // And nothing was left open by the throw. An orphaned channel keeps Node's event loop
+    // alive forever, which is how this was found the first time.
+    assert.equal(channels.length, 0, 'the channel must not be opened before the check')
+  } finally {
+    channels.forEach((c) => c.close())
+    if (original !== undefined) Object.defineProperty(globalThis, 'navigator', original)
+    else delete globalThis.navigator
+  }
+})
+
+test('a real navigator.locks is picked up without being passed in', async () => {
+  // The other half: where the platform provides Web Locks — every target browser, and
+  // Node 24 — no injection is needed. Stubbed rather than depending on the runtime, for
+  // the same reason as above.
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  let requested
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {
+      locks: {
+        request(name, options, callback) {
+          requested = name
+          return Promise.resolve(callback())
+        },
+      },
+    },
+    configurable: true,
+  })
+  const name = `ambient-${Math.random().toString(36).slice(2)}`
+  let client
+  try {
+    client = createSharedClient({
+      url: 'http://127.0.0.1:1/events',
+      name,
+      channel: () => new BroadcastChannel(name),
+    })
+    await until(() => client.isLeader, 2000, 'the ambient lock manager was used')
+    assert.equal(requested, name, 'and it was asked for this hub\'s own lock')
+  } finally {
+    client?.close()
+    if (original !== undefined) Object.defineProperty(globalThis, 'navigator', original)
+    else delete globalThis.navigator
+  }
 })

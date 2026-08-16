@@ -57,7 +57,7 @@ protocol core behind a C ABI for other languages.
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
 > by two shared corpora — [97 vectors](./conformance/) pinning the protocol core and
 > [41 scenarios](./conformance/http/) pinning the HTTP layer over a real socket, both
-> language-neutral. The packages pass 258 tests plus 74 in Rust, the unsafe in the C ABI
+> language-neutral. The packages pass 259 tests plus 74 in Rust, the unsafe in the C ABI
 > is verified by Miri, and the [example app](./examples/express-react) runs end to end in
 > CI. Every significant decision — including the three that were reversed — is recorded
 > with its evidence in [DECISIONS.md](./DECISIONS.md).
@@ -686,7 +686,10 @@ silent staleness the rest of this library exists to prevent.
 
 A promoted tab resumes the stream where it left off. Every tab tracks the cursor of every
 event the leader forwards, whether or not it has a handler for that topic, so a handoff
-replays what was missed instead of restarting from now.
+replays what was missed instead of restarting from now. It also announces itself, and the
+other tabs answer with what they are subscribed to — the lock conveys leadership and
+nothing else, so a new leader rebuilds the topic union from the tabs that are actually
+still there rather than inheriting a registry that died with the old one.
 
 Two things to know:
 

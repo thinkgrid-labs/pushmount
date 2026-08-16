@@ -25,6 +25,10 @@
  * is used per tab, exactly as before. Degrading to more connections is correct and
  * boring; degrading to a guessed timeout is neither.
  *
+ * Every browser this library targets has it, and so does Node 24 — Node 22 has a
+ * `navigator` with no `locks` on it, which is worth knowing when testing, because the two
+ * take different paths through the constructor.
+ *
  * ## Handoff
  *
  * Every tab tracks the cursor of every event the leader forwards, whether or not it has a
@@ -32,6 +36,15 @@
  * shared stream had reached, and resumes from it. Anything the old leader received but
  * had not broadcast is re-delivered by the server's replay and deduped by id, which is
  * the same trade §4.5 already makes locally.
+ *
+ * ## Membership
+ *
+ * What the cursor does not carry is *who else is here*. Only the leader tracks which tab
+ * wants which topics, and a lock handoff conveys one bit — that is the whole reason to
+ * use one. So a new leader announces itself and every tab answers with its topics, which
+ * is the only protocol in this file. Rebuilding the union from the answers is what makes
+ * it safe: a tab that has gone away cannot answer, so there is no stale registry to prune
+ * and no way for a tab that did not move to quietly leave the union.
  */
 
 import { Client, type ClientState, type GapReason, type Handler } from './client.js'
@@ -106,6 +119,12 @@ type FromFollower =
   | { t: 'reconnect' }
 
 type FromLeader =
+  /**
+   * A leader announcing itself, and the only message that is broadcast rather than
+   * addressed. Every tab answers it with a `hello`, which is how a leader that has just
+   * been promoted learns who is out there and what they want — see `#becomeLeader`.
+   */
+  | { t: 'lead'; from: string }
   | { t: 'welcome'; to: string; cursor?: string; state: ClientState; rejected: boolean }
   | { t: 'event'; id: string; topic: string; data: string; origin?: string }
   | { t: 'state'; state: ClientState; rejected: boolean }
@@ -175,8 +194,10 @@ export class SharedClient implements AghozClient {
       })
 
     // Announced regardless of the lock, because the answer arrives asynchronously and a
-    // leader that already exists should start forwarding to this tab immediately.
-    this.#send({ t: 'hello', from: this.#id, topics: [] })
+    // leader that already exists should start forwarding to this tab immediately. If
+    // there is no leader yet, nobody answers and nothing is lost: whichever tab wins the
+    // lock announces itself, and every tab answers that.
+    this.#announce()
   }
 
   get state(): ClientState {
@@ -258,6 +279,23 @@ export class SharedClient implements AghozClient {
 
   // ------------------------------------------------------------------- leader
 
+  /**
+   * Wins the lock, opens the connection, and asks the other tabs who they are.
+   *
+   * The registry of who wants what lives only in the leader, and a Web Lock handoff
+   * carries nothing across — that is the point of it: the lock conveys exactly one bit,
+   * which is why there is no election protocol to get wrong. So a promoted tab starts
+   * knowing only its own topics, and the tabs that did not move have no reason to
+   * announce themselves again. Their topics would simply leave the union: they keep
+   * their state, their cursor and their callbacks, and stop receiving. Silent staleness
+   * — §0's one unacceptable failure — reintroduced by the feature that exists to save
+   * connections.
+   *
+   * So the new leader announces itself and every tab answers. Rebuilding the registry
+   * from the answers rather than trying to inherit the old one is the same trade the
+   * lock makes: a tab that has gone away cannot answer, so what comes back is the union
+   * of the tabs that actually exist rather than a map that has to be pruned.
+   */
   #becomeLeader(): void {
     if (this.#closed) return
     this.#byTab.set(this.#id, this.#ownTopics())
@@ -291,6 +329,13 @@ export class SharedClient implements AghozClient {
     })
 
     this.#syncUnion()
+
+    // Answers arrive after the connection has already opened on this tab's own topics,
+    // and each one widens the union. Widening reconnects with the cursor this tab has
+    // been tracking all along (§9.3), so the events that arrived for another tab's topic
+    // in that window are replayed rather than skipped — the same trade the handoff
+    // itself makes.
+    this.#send({ t: 'lead', from: this.#id })
   }
 
   /** Leader only: subscribe the inner client to the union of every tab's topics. */
@@ -362,6 +407,13 @@ export class SharedClient implements AghozClient {
 
     // ---- a follower listening to its leader -------------------------------
     switch (message.t) {
+      case 'lead':
+        // A leader that knows nothing about this tab — either it was just promoted, or
+        // this tab's own announcement was made before there was anyone to hear it.
+        // Answering is the whole membership protocol; the `welcome` that comes back
+        // re-syncs this tab's state and cursor with whoever is holding the stream now.
+        this.#announce()
+        return
       case 'welcome':
         if (message.to !== this.#id) return
         // Only adopt a cursor that is ahead of ours. A tab constructed with an
@@ -403,6 +455,11 @@ export class SharedClient implements AghozClient {
       // take the tab's own delivery down with it.
       this.#options.onError?.(error)
     }
+  }
+
+  /** Tells whoever is leading that this tab is here, and what it wants. */
+  #announce(): void {
+    this.#send({ t: 'hello', from: this.#id, topics: this.#ownTopics() })
   }
 
   #publishTopics(): void {

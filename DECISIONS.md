@@ -5,6 +5,64 @@ Newest first.
 
 ---
 
+## D15 — A lock handoff conveys one bit, so the tab registry is rediscovered rather than inherited
+
+**Date:** 16 August 2026 · **Status:** accepted
+
+### The hole D11's own mutation table walked past
+
+D11 lists four deliberate breaks and the scenario that catches each, and the third is
+*"leader subscribes to its own topics, not the union"*. A promoted leader did exactly that,
+and no scenario caught it — because every failover test used tabs with identical topic
+sets, where a union of one is indistinguishable from the union of all.
+
+Three tabs, three topics, kill the leader:
+
+```
+before:  alpha→tab A (leader)   beta→tab B   gamma→tab C     all delivered
+after:   B promoted, union = {beta}
+         publish gamma  →  tab C receives nothing, state 'open', no gap, no error
+```
+
+Tab C keeps its state, its cursor and its callbacks. It simply stops receiving. Silent
+staleness, reintroduced by the feature whose entire justification was saving connections —
+the same shape D11 rejected heartbeat elections for, arriving through the door D11 opened.
+
+### Why the registry cannot be inherited
+
+Who-wants-what lives only in the leader. Nothing in a Web Lock handoff carries it across,
+and that is the property D11 was bought for: the lock conveys leadership and nothing else,
+which is why there is no election protocol to get wrong. The alternatives to rediscovery
+are all worse — a registry mirrored into `localStorage` needs its own expiry story for tabs
+that crashed, and a leader that inherited the old map would inherit its ghosts.
+
+### Decision: the new leader announces, every tab answers
+
+One message type, `lead`, and it is the only one broadcast rather than addressed. Tabs
+answer with the `hello` they already send at construction, so the leader side needs no new
+handler and the reply path — `welcome`, which re-syncs the answering tab's state and cursor
+with whoever holds the stream now — is the one that was already there.
+
+Rebuilding from the answers rather than pruning a map is what makes it correct without a
+timeout: **a tab that has gone away cannot answer.** Liveness is established by the same
+mechanism that establishes leadership, rather than by a second one that would need its own
+tuning.
+
+The union widens after the connection has already opened, which reconnects with the cursor
+the tab has been tracking all along (§9.3) — so events for another tab's topic that arrived
+inside that window are replayed, not skipped. The same trade the handoff itself makes.
+
+It closes a second hole in passing: a tab that announced itself before any leader existed
+was invisible until it next subscribed. It now answers the first `lead` like any other.
+
+### Verified by the test that was missing
+
+*a promotion keeps the topics of the tabs that did not move* — three tabs, three distinct
+topics, and an assertion that the bystander is still receiving after the leader dies. It
+fails against the previous build, which is the only reason to trust it.
+
+---
+
 ## D14 — `hub.cursor()` answers for the sequence, and with a backplane the sequence is shared
 
 **Date:** 16 August 2026 · **Status:** accepted
