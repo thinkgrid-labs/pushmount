@@ -357,17 +357,22 @@ pub fn validate_id(id: String) -> bool {
     EventId::parse(&id).is_some()
 }
 
-/// §2.1 — compares two ids, returning -1, 0 or 1.
+/// §2.1 — compares two canonical ids, returning -1, 0 or 1.
+///
+/// Invalid ids are an error, never equality. The handler uses this to decide whether a
+/// persisted floor or backplane cursor can be trusted; treating malformed input as equal
+/// would turn corrupt metadata into an unreported gap.
 #[napi]
-pub fn compare_ids(a: String, b: String) -> i32 {
-    match (EventId::parse(&a), EventId::parse(&b)) {
-        (Some(x), Some(y)) => match x.cmp(&y) {
-            std::cmp::Ordering::Less => -1,
-            std::cmp::Ordering::Equal => 0,
-            std::cmp::Ordering::Greater => 1,
-        },
-        _ => 0,
-    }
+pub fn compare_ids(a: String, b: String) -> Result<i32> {
+    let x = EventId::parse(&a)
+        .ok_or_else(|| Error::new(Status::InvalidArg, format!("malformed-cursor: {a}")))?;
+    let y = EventId::parse(&b)
+        .ok_or_else(|| Error::new(Status::InvalidArg, format!("malformed-cursor: {b}")))?;
+    Ok(match x.cmp(&y) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    })
 }
 
 /// Encodes a frame directly, for the conformance runner.

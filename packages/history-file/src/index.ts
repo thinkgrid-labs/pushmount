@@ -19,13 +19,13 @@
  * Writes are appended as they happen and are **not** fsynced per event by default. A hard
  * crash can therefore lose the tail of the log.
  *
- * That is a deliberate trade rather than a corner cut, and it is safe for one specific
- * reason: **losing the tail cannot cause silent staleness.** A hub restored from a short
- * log has a cursor behind the client's, and a cursor newer than anything the hub has seen
- * is reported as a gap — so the client refetches, exactly as it would with no store at
- * all. Durability here buys fewer refetches, never correctness, and paying an fsync per
- * publish to buy nothing is the wrong default. Set `fsync: true` if your operational
- * story wants it anyway.
+ * That is a deliberate trade rather than a corner cut, and it remains safe because a
+ * process removes the previous run's clean certificate before it serves or publishes. A
+ * crash leaves no certificate, so the next hub treats even a valid-looking prefix as
+ * uncertain and tells every resuming client to refetch. A graceful close drains and syncs
+ * the log before issuing a new certificate, so ordinary deploys still replay normally.
+ * Durability here buys fewer refetches, never correctness; set `fsync: true` if your
+ * operational story wants every individual append durable too.
  *
  * A partially written final line — the ordinary result of a crash mid-append — is dropped
  * on load rather than treated as corruption. Anything else would turn a routine crash into
@@ -58,20 +58,22 @@ export interface FileStoreOptions {
    */
   maxBytes?: number
   /**
-   * fsync after every append. Default false — see the note above on why the tail is
-   * safe to lose.
+   * fsync after every append. Default false — an unclean recovery forces a gap rather
+   * than trusting a possibly short tail.
    */
   fsync?: boolean
 }
 
 export function createFileStore(options: FileStoreOptions): HistoryStore {
   const path = options.path
+  const cleanPath = `${path}.clean`
   const maxBytes = options.maxBytes ?? 8 * 1024 * 1024
   const shouldSync = options.fsync ?? false
 
   let handle: FileHandle | undefined
   let bytes = 0
   let closed = false
+  let closing: Promise<void> | undefined
   /**
    * Appends are serialised through this.
    *
@@ -101,8 +103,21 @@ export function createFileStore(options: FileStoreOptions): HistoryStore {
         throw error
       }
 
+      // A clean marker is a certificate from the previous process: it drained and synced
+      // the log before exiting. Remove it before this process serves or publishes, so a
+      // crash in this run leaves the next recovery conservative rather than trusting an
+      // earlier process's certificate.
+      let clean = false
+      try {
+        clean = (await readFile(cleanPath, 'utf8')).trim() === 'clean'
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      if (clean) await unlink(cleanPath)
+
       const events: StoredEvent[] = []
       let trimmed: string | undefined
+      let tornTail = false
       const lines = raw.split('\n')
       for (const [i, line] of lines.entries()) {
         if (line === '') continue
@@ -120,9 +135,14 @@ export function createFileStore(options: FileStoreOptions): HistoryStore {
           if (i !== lines.length - 1) {
             throw new Error(`aghoz: ${path} is corrupt at line ${i + 1}`)
           }
+          tornTail = true
         }
       }
-      return { events, ...(trimmed !== undefined && { trimmed }) }
+      return {
+        events,
+        ...(trimmed !== undefined && { trimmed }),
+        ...(clean && !tornTail ? {} : { uncertain: true }),
+      }
     },
 
     append(event: StoredEvent): Promise<void> {
@@ -142,14 +162,34 @@ export function createFileStore(options: FileStoreOptions): HistoryStore {
       return tail
     },
 
-    async close(): Promise<void> {
+    close(): Promise<void> {
+      if (closing !== undefined) return closing
       closed = true
-      // Let anything already queued finish, so `close()` does not truncate a write in
-      // flight. A failed append has already been reported through the hub's onError.
-      await tail.catch(() => {})
-      await handle?.close()
-      handle = undefined
+      closing = (async () => {
+        // A failed write must never produce a clean certificate: a later process has a
+        // prefix, not a complete log, and must report a gap rather than trusting it.
+        await tail
+        // `fsync: false` is still fine during a run, but a clean certificate needs the
+        // bytes it certifies to be durable before it is written.
+        await handle?.sync()
+        await handle?.close()
+        handle = undefined
+        await writeCleanMarker()
+      })()
+      return closing
     },
+  }
+
+  async function writeCleanMarker(): Promise<void> {
+    const temp = `${cleanPath}.tmp`
+    const marker = await open(temp, 'w')
+    try {
+      await marker.write('clean\n')
+      await marker.sync()
+    } finally {
+      await marker.close()
+    }
+    await rename(temp, cleanPath)
   }
 
   /**
@@ -223,7 +263,7 @@ async function size(path: string): Promise<number> {
 
 /** Deletes a store's file. For tests and for an operator who wants a clean slate. */
 export async function removeFileStore(path: string): Promise<void> {
-  for (const p of [path, `${path}.compact`]) {
+  for (const p of [path, `${path}.compact`, `${path}.clean`, `${path}.clean.tmp`]) {
     try {
       await unlink(p)
     } catch {

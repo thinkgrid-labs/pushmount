@@ -274,6 +274,8 @@ export function createHub(options: CreateHubOptions = {}) {
    * eviction mark and knows nothing of a file that was compacted before boot.
    */
   let historyFloor: string | undefined
+  /** A restored prefix that cannot vouch for its tail must force a conservative gap. */
+  let historyUncertain = false
 
   /**
    * The newest id the shared log held when this process joined it — `0-0` without a
@@ -300,8 +302,9 @@ export function createHub(options: CreateHubOptions = {}) {
       ? Promise.resolve()
       : store
           .load()
-          .then(({ events, trimmed }) => {
+          .then(({ events, trimmed, uncertain }) => {
             historyFloor = trimmed
+            historyUncertain = uncertain === true
             for (const event of events) {
               // Their original ids, in their original order. `append` advances the
               // sequence past each, so a later local publish cannot reissue one, and the
@@ -476,67 +479,73 @@ export function createHub(options: CreateHubOptions = {}) {
      * rather than becoming an unhandled rejection.
      */
     publish(topic: string, data: unknown, options: PublishOptions = {}): Promise<PublishAck> {
-      try {
-        if (closed) throw new Error('hub is closed')
-        const payload = (typeof data === 'string' ? data : JSON.stringify(data)) ?? ''
-        const origin = options.origin
+      // A publish before restoration used to race the restored sequence and, for a file
+      // store, could arrive before it had withdrawn the previous run's clean certificate.
+      // `publish` already returns a promise, so making it wait preserves its API while
+      // ensuring the first accepted event belongs to the current run's durability epoch.
+      return ready.then(() => {
+        try {
+          if (closed) throw new Error('hub is closed')
+          const payload = (typeof data === 'string' ? data : JSON.stringify(data)) ?? ''
+          const origin = options.origin
 
-        if (backplane !== undefined) {
-          // Validate before the round trip, so bad input fails fast and locally rather
-          // than after a network hop.
-          if (!core.validTopic(topic)) {
-            throw new TypeError(`invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
-          }
-          if (origin !== undefined && origin !== '' && !core.validOrigin(origin)) {
-            throw new TypeError(`invalid origin: ${JSON.stringify(origin.slice(0, 64))}`)
-          }
-          // Delivery happens when this event comes back through onEvent, along with
-          // every other process's. One ordering, everywhere.
-          return backplane.publish(topic, payload, origin).then(
-            (id) => {
-              // Counted here rather than at the call, because until the backplane has
-              // accepted it there is no event: a write that fails reaches nobody, in
-              // this process or any other.
-              counters.published++
-              return { id, delivered: deliveredFor(topic) }
-            },
-            (error) => {
-              counters.errors.publish++
-              onError(error)
-              throw error
-            },
-          )
-        }
-
-        const { id, frame, targets } = core.publish(now(), topic, payload, origin)
-        counters.published++
-        const delivered = fanOut(frame, targets)
-
-        if (store !== undefined) {
-          // Written after delivery, and not awaited. An event that reached subscribers has
-          // happened; making the publish wait on a disk write would put the store's
-          // latency on the path of every live update, to protect only the replay a
-          // restart would need.
-          try {
-            const written = store.append({ id, topic, payload, ...(origin !== undefined && origin !== '' && { origin }) })
-            if (written instanceof Promise) {
-              written.catch((error) => {
-                counters.errors.history++
-                onError(error)
-              })
+          if (backplane !== undefined) {
+            // Validate before the round trip, so bad input fails fast and locally rather
+            // than after a network hop.
+            if (!core.validTopic(topic)) {
+              throw new TypeError(`invalid topic: ${JSON.stringify(topic.slice(0, 64))}`)
             }
-          } catch (error) {
-            counters.errors.history++
-            onError(error)
+            if (origin !== undefined && origin !== '' && !core.validOrigin(origin)) {
+              throw new TypeError(`invalid origin: ${JSON.stringify(origin.slice(0, 64))}`)
+            }
+            // Delivery happens when this event comes back through onEvent, along with
+            // every other process's. One ordering, everywhere.
+            return backplane.publish(topic, payload, origin).then(
+              (id) => {
+                // Counted here rather than at the call, because until the backplane has
+                // accepted it there is no event: a write that fails reaches nobody, in
+                // this process or any other.
+                counters.published++
+                return { id, delivered: deliveredFor(topic) }
+              },
+              (error) => {
+                counters.errors.publish++
+                onError(error)
+                throw error
+              },
+            )
           }
-        }
 
-        return Promise.resolve({ id, delivered })
-      } catch (error) {
-        counters.errors.publish++
-        onError(error)
-        return Promise.reject(error instanceof Error ? error : new Error(String(error)))
-      }
+          const { id, frame, targets } = core.publish(now(), topic, payload, origin)
+          counters.published++
+          const delivered = fanOut(frame, targets)
+
+          if (store !== undefined) {
+            // Written after delivery, and not awaited. An event that reached subscribers has
+            // happened; making the publish wait on a disk write would put the store's
+            // latency on the path of every live update, to protect only the replay a
+            // restart would need.
+            try {
+              const written = store.append({ id, topic, payload, ...(origin !== undefined && origin !== '' && { origin }) })
+              if (written instanceof Promise) {
+                written.catch((error) => {
+                  counters.errors.history++
+                  onError(error)
+                })
+              }
+            } catch (error) {
+              counters.errors.history++
+              onError(error)
+            }
+          }
+
+          return { id, delivered }
+        } catch (error) {
+          counters.errors.publish++
+          onError(error)
+          throw error instanceof Error ? error : new Error(String(error))
+        }
+      })
     },
 
     /**
@@ -856,6 +865,12 @@ export function createHub(options: CreateHubOptions = {}) {
         //
         // Equal is not a gap, matching the ring's own rule: that is the event the client
         // already holds.
+        if (historyUncertain && cursor !== undefined && !truncated) {
+          // The store recovered a valid prefix but cannot prove that it is the whole log.
+          // A cursor inside that prefix could otherwise receive its retained suffix and
+          // then live traffic while silently skipping a lost tail.
+          truncated = true
+        }
         if (historyFloor !== undefined && cursor !== undefined && !truncated) {
           try {
             if (core.compareIds(cursor, historyFloor) < 0) truncated = true

@@ -59,6 +59,15 @@ export interface LoadedHistory {
    * already holds.
    */
   readonly trimmed?: string
+  /**
+   * True when the store cannot vouch that its tail is complete.
+   *
+   * A store may have retained a valid prefix while losing newer events in a crash or a
+   * failed write. Replaying that prefix to a cursor inside it otherwise looks healthy,
+   * even though events after the cursor disappeared. The handler reports a gap for every
+   * resumed client in this state; a false refetch is safer than a silent hole.
+   */
+  readonly uncertain?: boolean
 }
 
 export interface HistoryStore {

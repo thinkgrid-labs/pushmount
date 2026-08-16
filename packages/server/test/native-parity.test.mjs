@@ -417,6 +417,17 @@ test('the native core rejects a malformed id from a backplane', options, async (
   assert.throws(() => core.encode('1-0', 't', 'v', 'a\nid: 9-9'), /origin/)
 })
 
+test('the native core rejects malformed ids when comparing persisted metadata', options, () => {
+  const core = createNativeCore(native, {})
+  for (const bad of ['01-0', '1-', 'nonsense', '1e5-0']) {
+    assert.throws(
+      () => core.compareIds(bad, '1-0'),
+      /malformed-cursor/,
+      `comparison must reject ${bad} rather than treating it as equal`,
+    )
+  }
+})
+
 // The contract between the two halves, asserted from both sides at once: the binding
 // leads every rejection with a reason token, and the seam maps exactly those and nothing
 // else. Neither half is checkable alone — the messages are just strings in Rust, and the

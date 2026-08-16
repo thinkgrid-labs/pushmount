@@ -187,12 +187,17 @@ test('losing the tail of the log is safe — the client is told, not left stale'
   const store = createFileStore({ path })
   const hub = createHub({ keepAliveMs: 0, history: store })
   await hub.ready()
-  await hub.publish('t', 'one')
-  const lost = await hub.publish('t', 'two')
+  const a = await hub.publish('t', 'one')
+  await hub.publish('t', 'two')
   hub.close()
   await store.close()
 
-  // Simulate a hard crash that lost the last append: truncate the file to its first line.
+  // A new process withdraws the previous run's certificate before it can serve. Crashing
+  // after that point leaves a valid prefix that cannot be trusted as a complete history.
+  await createFileStore({ path }).load()
+
+  // Simulate that crash losing the tail: the remaining line is perfectly valid, so merely
+  // checking whether the client cursor is above the restored sequence would miss this.
   const lines = (await readFile(path, 'utf8')).split('\n').filter(Boolean)
   await writeFile(path, `${lines[0]}\n`)
 
@@ -202,12 +207,12 @@ test('losing the tail of the log is safe — the client is told, not left stale'
   const server = createServer((req, res) => handler(req, res))
   await new Promise((r) => server.listen(0, r))
   try {
-    // The client's cursor is newer than anything the restored hub has seen. This is why
-    // the store does not need to fsync per event: a short log costs a refetch, never
-    // silence.
+    // `a` is *inside* the restored prefix, not above it. The old implementation replayed
+    // nothing, then went live, silently omitting `lost`; an unclean recovery must force a
+    // gap for this shape too.
     const res = await fetch(
       `http://127.0.0.1:${server.address().port}/events?topics=t`,
-      { headers: { 'last-event-id': lost.id } },
+      { headers: { 'last-event-id': a.id } },
     )
     assert.equal(res.headers.get('last-event-id-checkpoint'), 'earliest')
     await res.body.cancel()
