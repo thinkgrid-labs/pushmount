@@ -5,6 +5,90 @@ Newest first.
 
 ---
 
+## D9 — The ABI grows an externally-assigned-id path, and ids are bounded at 2^53 − 1
+
+**Date:** 16 August 2026 · **Status:** accepted
+
+Two changes that had to land together, because both break the C ABI and nothing has
+shipped yet. The second was found while writing conformance vectors for the first.
+
+### The hole: no backplane is expressible outside Node
+
+`HubCore` has had `append` and `encode` since the Redis backplane landed. The C ABI had
+neither, and `core-native.ts` threw on both with a comment calling it "a gap to close
+before a second language binding needs a backplane."
+
+That gap had become load-bearing. D3's own conclusion was that the backplane is a
+*prerequisite* for the second binding rather than a feature after it, because Gunicorn,
+Puma and Swoole are multi-worker by default. So the ABI supported exactly one deployment
+shape — single-process — which is the shape Python, Ruby and PHP never have. A Python
+adapter written against ABI 2000 would have shipped the silent partial-delivery failure
+the startup warning exists to prevent, and could not have fixed it at the adapter layer.
+
+**Added `ag_append` and `ag_encode`.** Both take the id as its canonical `<ms>-<seq>`
+**text**, not as split halves. That is the whole point: `core-native.ts` refused to
+implement `encode` over the existing `encodeFrame` precisely because reconstructing an id
+in TypeScript would mean parsing one in TypeScript, and §2.1's canonical form is the kind
+of rule D3 exists to keep in one place. Parsing now happens in the core on every path.
+
+`ag_encode` takes `&self` in the core, so "records nothing" is compiler-enforced rather
+than asserted in a comment.
+
+**`AG_ABI_VERSION` 2000 → 3000.** A major bump because `AG_ERR_MALFORMED_ID` (−15) is a
+status a 2000-era caller has no arm for. Free now; a `ag_publish_with_id` shim would have
+lived forever.
+
+### The divergence: "unsigned 64-bit" is not implementable
+
+§2 said both halves of an id are unsigned 64-bit. Writing the `idParse` vectors from that
+sentence surfaced a real disagreement between the two cores:
+
+| id | TypeScript | Rust (before) |
+|---|---|---|
+| `9007199254740993-0` | rejected | accepted |
+| `18446744073709551615-0` | rejected | accepted |
+
+JavaScript's `Number` is an f64, so `9007199254740992` and `9007199254740993` are the same
+value. The TypeScript core rejected everything past `Number.MAX_SAFE_INTEGER`; the Rust
+core accepted the full u64 range. **The same cursor string named two different events
+depending on which implementation received it** — and the failure would surface as a
+client resuming from the wrong place, with nothing erroring.
+
+This is T15's shape exactly: a bound stated in one unit, implemented in whatever unit the
+language reaches for first. Every language has its own wrong answer for "length", and its
+own wrong answer for "how big is an integer".
+
+**Narrowed §2 to `[0, 2^53 − 1]` rather than adopting BigInt.** BigInt on the id path
+costs a boxed allocation per publish and per comparison, on the hottest path in the
+library, to buy a range that expires in the year 287396 — and 2^53 − 1 events inside one
+millisecond is not a limit anything meets. The spec was wrong, not the implementations.
+
+Verified the way D6 was: the three vectors were run against the unfixed rule first and
+observed to fail (P19, P20, P21 — `expected valid=false, got true`), then to pass.
+
+### Two new corpus groups, 57 → 87 vectors
+
+- **`idParse` (21)** — which strings are ids at all. Previously uncovered, despite being
+  reachable from the wire in two directions: a client's `Last-Event-ID`, and now a
+  backplane-assigned id. This is where the divergence above was caught.
+- **`append` (9)** — the externally-assigned-id path, as an ops list applied to a fresh
+  hub, pinning both the emitted frames and the cursor afterwards. The cursor is the
+  assertion that matters: `append` must advance it so a local fallback cannot reissue a
+  spent id, an out-of-order `append` must not rewind it, and `encode` must not touch it.
+
+The corpus gained a `version` field, now `0.2`, so an adapter can report which corpus it
+passes. §11's "no version field, a breaking change takes a new mount path" is workable for
+one implementation you control and not for adapters you do not.
+
+### What this does not do
+
+The backpressure signal is still `note_buffer(id, absolute_queued_bytes)`, which requires
+a host that can report a socket's outstanding depth. ASGI, `net/http` and Swoole cannot;
+they backpressure by suspending instead. That is the second ABI hole and it is not closed
+here — see the v0.3 roadmap.
+
+---
+
 ## D8 — Svelte gets stores, Vue gets a shallow ref
 
 **Date:** 16 August 2026 · **Status:** accepted

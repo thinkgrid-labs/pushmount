@@ -7,9 +7,13 @@
 //   validTopic(topic)                    -> boolean
 //   validOrigin(origin)                  -> boolean
 //   compareIds([msA,seqA], [msB,seqB])   -> -1 | 0 | 1
+//   validId(raw)                         -> boolean
 //   newHub(maxHistoryBytes?)             -> {
-//     publish(nowMs, topic, payload)     -> Uint8Array
-//     checkpoint(cursor)                 -> 'absent' | 'echo' | 'earliest'
+//     publish(nowMs, topic, payload, origin?) -> Uint8Array
+//     append(id, topic, payload, origin?)     -> Uint8Array
+//     encode(id, topic, payload, origin?)     -> Uint8Array
+//     cursor()                                -> '<ms>-<seq>'
+//     checkpoint(cursor)                      -> 'absent' | 'echo' | 'earliest'
 //   }
 //     where `cursor` is null or [ms, seq], and `checkpoint` subscribes to topic 't'.
 //
@@ -78,6 +82,38 @@ for (const v of vectors.idOrder) {
     actual = `threw: ${e.message}`
   }
   check(v.id, v.desc, v.cmp, actual)
+}
+
+// ---- §2.1 id parsing
+for (const v of vectors.idParse) {
+  let actual
+  try {
+    actual = impl.validId(v.raw)
+  } catch (e) {
+    actual = `threw: ${e.message}`
+  }
+  check(v.id, v.desc, v.valid, actual)
+}
+
+// ---- the externally-assigned-id path (append / encode)
+for (const v of vectors.append) {
+  let actual
+  try {
+    const hub = impl.newHub()
+    const frames = []
+    for (const [kind, ...args] of v.ops) {
+      // JSON has no undefined, so an absent origin arrives as null.
+      const origin = args[3] ?? undefined
+      if (kind === 'publish') frames.push(dec.decode(hub.publish(args[0], args[1], args[2], origin)))
+      else if (kind === 'append') frames.push(dec.decode(hub.append(args[0], args[1], args[2], origin)))
+      else if (kind === 'encode') frames.push(dec.decode(hub.encode(args[0], args[1], args[2], origin)))
+      else throw new Error(`unknown op: ${kind}`)
+    }
+    actual = JSON.stringify({ frames, cursor: hub.cursor() })
+  } catch (e) {
+    actual = `threw: ${e.message}`
+  }
+  check(v.id, v.desc, JSON.stringify({ frames: v.frames, cursor: v.cursor }), actual)
 }
 
 // ---- §2.2 monotonicity

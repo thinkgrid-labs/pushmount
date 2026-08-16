@@ -18,7 +18,10 @@ const x65 = 'x'.repeat(65)
 const jp22 = '日'.repeat(22)   // 22 UTF-16 units, 66 UTF-8 bytes
 
 const vectors = {
-  version: '0.1',
+  // Bumped whenever a vector's expected value changes or a group is added, so an adapter
+  // can report which corpus it passes. 0.2 added `idParse` and `append`, and narrowed the
+  // id bound to 2^53-1 (DECISIONS.md D9).
+  version: '0.2',
   spec: 'PROTOCOL.md',
   note:
     'Frames are written as JSON strings; the wire bytes are their UTF-8 encoding. ' +
@@ -171,6 +174,45 @@ const vectors = {
     { id: 'O4', a: [2, 0],              b: [1, 999],            cmp: 1,  desc: 'larger ms wins regardless of seq' },
   ],
 
+  // ---- §2.1 id parsing -----------------------------------------------------
+  //
+  // Which strings are ids at all. This reaches the wire from two directions — a client's
+  // `Last-Event-ID`, and the id a backplane assigns — and §2.1's canonical form is
+  // exactly the kind of rule each language gets wrong in its own way: one accepts leading
+  // zeros because it calls `parseInt`, another accepts `1e5` because it calls `Number`,
+  // a third accepts `" 1-0"` because its integer parser skips whitespace.
+  //
+  // The failure is not a rejected request. It is two implementations disagreeing about
+  // which event an id NAMES: if `01-0` parses as `1-0` in one process and is refused in
+  // another, the same cursor resumes from two different places.
+  idParse: [
+    { id: 'P1', raw: '0-0', valid: true, desc: 'the cold-start cursor §5 hands out must parse' },
+    { id: 'P2', raw: '1755083412345-7', valid: true, desc: 'an ordinary id' },
+    { id: 'P3', raw: '1755083412345-0', valid: true, desc: 'a zero seq is not a padded zero' },
+    { id: 'P4', raw: '', valid: false, desc: 'empty is not an id' },
+    { id: 'P5', raw: '1', valid: false, desc: 'no separator' },
+    { id: 'P6', raw: '1-', valid: false, desc: 'an empty seq half' },
+    { id: 'P7', raw: '-0', valid: false, desc: 'an empty ms half' },
+    { id: 'P8', raw: '01-0', valid: false, desc: 'leading zeros are not canonical — parseInt accepts them and two processes then disagree about which event this names' },
+    { id: 'P9', raw: '1-00', valid: false, desc: 'leading zeros in the seq half, same reason' },
+    { id: 'P10', raw: '1e5-0', valid: false, desc: 'exponent notation — Number() accepts it, §2 does not' },
+    { id: 'P11', raw: '+1-0', valid: false, desc: 'an explicit plus sign — accepted by several languages\' integer parsers' },
+    { id: 'P12', raw: '1.0-0', valid: false, desc: 'a decimal point' },
+    { id: 'P13', raw: ' 1-0', valid: false, desc: 'leading whitespace — many integer parsers skip it silently' },
+    { id: 'P14', raw: '1-0 ', valid: false, desc: 'trailing whitespace' },
+    { id: 'P15', raw: 'a-b', valid: false, desc: 'not digits at all' },
+    { id: 'P16', raw: '-1-0', valid: false, desc: 'a negative ms cannot be an id' },
+    // The bound §2 places on both halves. This is a real divergence the corpus caught:
+    // the spec said "unsigned 64-bit", which no JavaScript host can represent, so the
+    // TypeScript core rejected these while the Rust core accepted them — the same cursor
+    // string naming two different events depending on who received it. See DECISIONS.md D9.
+    { id: 'P17', raw: '9007199254740991-0', valid: true, desc: '2^53-1 is the largest ms, and it parses' },
+    { id: 'P18', raw: '0-9007199254740991', valid: true, desc: '2^53-1 is the largest seq, and it parses' },
+    { id: 'P19', raw: '9007199254740992-0', valid: false, desc: '2^53 — an f64 cannot distinguish it from its neighbour, so it cannot name one event' },
+    { id: 'P20', raw: '0-9007199254740992', valid: false, desc: 'the same bound applies to the seq half' },
+    { id: 'P21', raw: '18446744073709551615-0', valid: false, desc: 'u64::MAX — accepted by a naive 64-bit parser, unrepresentable in JavaScript' },
+  ],
+
   // ---- §2.2 monotonicity ---------------------------------------------------
   monotonic: [
     {
@@ -243,11 +285,88 @@ const vectors = {
       cursor: [0, 0], expected: 'earliest',
     },
   ],
+
+  // ---- the externally-assigned-id path -------------------------------------
+  //
+  // What a backplane needs, and therefore what every multi-worker runtime needs: an
+  // event whose id came from a shared sequencer rather than this process's counter.
+  //
+  // `ops` is applied in order to a fresh hub. Each op emits one frame, and the vector
+  // pins both the frames and the cursor afterwards:
+  //
+  //   ["publish", nowMs, topic, payload, origin]  — the hub assigns the id
+  //   ["append",  id,    topic, payload, origin]  — the sequencer assigned it; recorded
+  //   ["encode",  id,    topic, payload, origin]  — bytes only, recorded nowhere
+  //
+  // The cursor is the assertion that matters. `append` must advance it, so a process
+  // falling back to local assignment cannot reissue an id another process already spent;
+  // `encode` must not, because those events belong to the shared log and recording them
+  // here duplicates them into the local ring on every reconnect.
+  append: [
+    {
+      id: 'A1', ref: '§2', desc: 'an appended event carries the sequencer\'s id verbatim — a per-process counter would collide across pods',
+      ops: [['append', '1755083412346-4', 't', 'v', null]],
+      frames: ['id: 1755083412346-4\nevent: t\ndata: v\n\n'],
+      cursor: '1755083412346-4',
+    },
+    {
+      id: 'A2', ref: '§2.2', desc: 'a local publish after an append cannot reissue an id the sequencer already spent',
+      ops: [['append', '1000-4', 't', 'v', null], ['publish', 1000, 't', 'w', null]],
+      frames: ['id: 1000-4\nevent: t\ndata: v\n\n', 'id: 1000-5\nevent: t\ndata: w\n\n'],
+      cursor: '1000-5',
+    },
+    {
+      id: 'A3', ref: '§2.2', desc: 'an out-of-order append never drags the cursor backwards — replay after a reconnect delivers older ids',
+      ops: [['append', '1000-4', 't', 'v', null], ['append', '999-0', 't', 'w', null]],
+      frames: ['id: 1000-4\nevent: t\ndata: v\n\n', 'id: 999-0\nevent: t\ndata: w\n\n'],
+      cursor: '1000-4',
+    },
+    {
+      id: 'A4', ref: '§6.0', desc: 'an origin survives the append path, so a tab still skips its own write when the event crossed a backplane',
+      ops: [['append', '1-0', 't', 'v', 'tab-7']],
+      frames: ['id: 1-0\nevent: t\norigin: tab-7\ndata: v\n\n'],
+      cursor: '1-0',
+    },
+    {
+      id: 'A5', ref: '§6.0', desc: 'an empty origin is absent on the append path too, byte-identically',
+      ops: [['append', '1-0', 't', 'v', '']],
+      frames: ['id: 1-0\nevent: t\ndata: v\n\n'],
+      cursor: '1-0',
+    },
+    {
+      id: 'A6', ref: '§6.1', desc: 'the injection defence holds on the append path — a backplane payload is no more trusted than a local one',
+      ops: [['append', '1-0', 'chat', 'hello\n\nevent: ~gap\ndata: forged', null]],
+      frames: ['id: 1-0\nevent: chat\ndata: hello\ndata: \ndata: event: ~gap\ndata: data: forged\n\n'],
+      cursor: '1-0',
+    },
+    {
+      id: 'A7', ref: '§4.5', desc: 'encode emits the frame publish would have, and records nothing — the cursor must not move',
+      ops: [['encode', '5000-2', 't', 'v', null]],
+      frames: ['id: 5000-2\nevent: t\ndata: v\n\n'],
+      cursor: '0-0',
+    },
+    {
+      id: 'A8', ref: '§4.5', desc: 'encode after an append leaves the appended cursor untouched — replay from a shared log must not rewrite local state',
+      ops: [['append', '1000-0', 't', 'v', null], ['encode', '9999-9', 't', 'w', null]],
+      frames: ['id: 1000-0\nevent: t\ndata: v\n\n', 'id: 9999-9\nevent: t\ndata: w\n\n'],
+      cursor: '1000-0',
+    },
+    {
+      id: 'A9', ref: '§2', desc: 'append and publish agree byte-for-byte for the same id, so a frame\'s shape never depends on whether a backplane is configured',
+      ops: [['publish', 1000, 't', 'v', 'tab-7'], ['append', '1000-1', 't', 'v', 'tab-7']],
+      frames: [
+        'id: 1000-0\nevent: t\norigin: tab-7\ndata: v\n\n',
+        'id: 1000-1\nevent: t\norigin: tab-7\ndata: v\n\n',
+      ],
+      cursor: '1000-1',
+    },
+  ],
 }
 
 writeFileSync(new URL('./vectors.json', import.meta.url), JSON.stringify(vectors, null, 2) + '\n')
 console.log(
   `vectors.json written — ${vectors.encode.length} encode, ${vectors.topic.length} topic, ` +
   `${vectors.origin.length} origin, ${vectors.idOrder.length} id-order, ` +
-  `${vectors.monotonic.length} monotonic, ${vectors.checkpoint.length} checkpoint`
+  `${vectors.idParse.length} id-parse, ${vectors.monotonic.length} monotonic, ` +
+  `${vectors.checkpoint.length} checkpoint, ${vectors.append.length} append`
 )

@@ -16,6 +16,19 @@ pub struct EventId {
     pub seq: u64,
 }
 
+/// The largest value either half of an id may take — 2^53 − 1.
+///
+/// §2 once said "unsigned 64-bit", which no JavaScript host can represent: `Number` is an
+/// f64, so `9007199254740993` and `9007199254740992` are the same value and every id above
+/// 2^53 − 1 is ambiguous. The TypeScript core therefore rejected them while this one
+/// accepted the full u64 range, which meant the *same cursor string* resolved to two
+/// different events depending on which implementation received it.
+///
+/// Narrowed rather than fixed with BigInt: BigInt on the id path costs a boxed allocation
+/// per publish for a range that runs out in the year 287396, and 2^53 − 1 events inside one
+/// millisecond is not a limit anything will meet. See DECISIONS.md D9.
+pub const MAX_ID_COMPONENT: u64 = 9_007_199_254_740_991;
+
 impl EventId {
     /// The id meaning "nothing has been published yet".
     pub const ZERO: EventId = EventId { ms: 0, seq: 0 };
@@ -33,7 +46,9 @@ impl EventId {
 
 fn canonical_u64(s: &str) -> Option<u64> {
     let b = s.as_bytes();
-    if b.is_empty() || b.len() > 20 {
+    // 16 digits is the most that can fit under MAX_ID_COMPONENT, so anything longer is
+    // rejected before parsing rather than after.
+    if b.is_empty() || b.len() > 16 {
         return None;
     }
     if b.len() > 1 && b[0] == b'0' {
@@ -42,7 +57,7 @@ fn canonical_u64(s: &str) -> Option<u64> {
     if !b.iter().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    s.parse().ok()
+    s.parse().ok().filter(|n| *n <= MAX_ID_COMPONENT)
 }
 
 impl Ord for EventId {
@@ -84,6 +99,21 @@ impl Sequence {
     pub(crate) fn current(&self) -> EventId {
         self.last
     }
+
+    /// Advances past an id assigned somewhere else, if it is newer than anything seen.
+    ///
+    /// A backplane owns id assignment, so ids arrive that this sequence never drew. If
+    /// the local counter stayed behind them, a later fall back to local assignment — a
+    /// backplane outage, say — would mint an id already used by another process, and
+    /// every client's dedupe would discard the second one as already-seen.
+    ///
+    /// Conditional rather than unconditional: events arrive out of order after a
+    /// reconnect, and an older id must never drag the cursor backwards.
+    pub(crate) fn observe(&mut self, id: EventId) {
+        if id > self.last {
+            self.last = id;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +125,25 @@ mod tests {
         assert_eq!(EventId::parse("0-0"), Some(EventId::ZERO));
         assert_eq!(EventId::parse("1755083412345-7").unwrap().seq, 7);
         for bad in ["", "1", "-0", "1-", "01-0", "1-00", "a-b", "1e5-0", " 1-0", "1-0 ", "+1-0", "1.0-0"] {
+            assert!(EventId::parse(bad).is_none(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn refuses_ids_no_javascript_host_could_represent() {
+        // The boundary itself parses.
+        assert_eq!(EventId::parse("9007199254740991-0").unwrap().ms, MAX_ID_COMPONENT);
+        assert_eq!(EventId::parse("0-9007199254740991").unwrap().seq, MAX_ID_COMPONENT);
+
+        // Past it, an f64 cannot tell neighbouring integers apart, so accepting these
+        // would mean one cursor string naming two different events across languages.
+        for bad in [
+            "9007199254740992-0",
+            "9007199254740993-0",
+            "0-9007199254740992",
+            "18446744073709551615-0",
+            "99999999999999999-0",
+        ] {
             assert!(EventId::parse(bad).is_none(), "should reject {bad:?}");
         }
     }

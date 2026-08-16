@@ -7,7 +7,7 @@ implementation is a defensible position rather than a slow-motion divergence.
 ## Layout
 
 ```
-vectors.json         the corpus — 57 vectors in six groups
+vectors.json         the corpus — 87 vectors in eight groups
 build-vectors.mjs    regenerates vectors.json
 runner.mjs           runs the corpus against any JavaScript implementation
 ```
@@ -34,8 +34,10 @@ The runner exits non-zero and prints expected-vs-actual for every divergence.
 | `topic` | 16 | §3 topic validation |
 | `origin` | 11 | §6.0 origin validation |
 | `idOrder` | 4 | §2.1 id comparison |
+| `idParse` | 21 | §2.1 which strings are canonical ids, and the 2^53−1 bound |
 | `monotonic` | 3 | §2.2 clock-regression handling |
 | `checkpoint` | 7 | §4.4 / §7.1 whether a reconnect is told it missed events |
+| `append` | 9 | §2 / §4.5 the externally-assigned-id path a backplane needs |
 
 ## Rules for adding vectors
 
@@ -64,6 +66,17 @@ whose failure message does not tell you what is wrong is worth very little at 3a
   §6.0 field, and the most exposed of the three: an origin is supplied by whichever client
   issued the write.
 - **T15** — the byte/character distinction described above.
+- **P19–P21** — the second real divergence the corpus caught, and the same shape as T15.
+  §2 said "unsigned 64-bit", which no IEEE-754 host can represent: the Rust core accepted
+  `18446744073709551615-0` and the TypeScript core refused it, so one cursor string named
+  two different events depending on which implementation received it. Every language has
+  its own wrong answer for "how big is an integer" too.
+- **A3** — an out-of-order `append` must not drag the cursor backwards. Replay after a
+  reconnect delivers older ids, and a cursor that rewinds replays events the client
+  already applied — or, worse, lets a later local id collide with one already spent.
+- **A7** — `encode` must record nothing. Its whole reason for existing separately from
+  `append` is that shared-history replay would otherwise push duplicates into the local
+  ring, out of id order, on every reconnect.
 - **O1** — `1755083412345-7` sorts before `1755083412345-10`. A string comparison gets
   this backwards, and the failure mode is a client silently discarding live events as
   already-seen.

@@ -95,6 +95,7 @@ fn status_codes_agree_between_source_and_header() {
         ("AG_ERR_ORIGIN_EMPTY", "-12"),
         ("AG_ERR_ORIGIN_TOO_LONG", "-13"),
         ("AG_ERR_ORIGIN_CONTROL", "-14"),
+        ("AG_ERR_MALFORMED_ID", "-15"),
         ("AG_BUFFER_SLOW_CONSUMER", "1"),
         ("AG_CHECKPOINT_EARLIEST", "2"),
         ("AG_GAP_SLOW_CONSUMER", "1"),

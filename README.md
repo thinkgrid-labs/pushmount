@@ -731,12 +731,14 @@ that changes, "a binding rather than a rewrite" is a claim about half the work.
   production. Register before you await, register teardown before you await, re-check the
   connection after it, delete from the map before `end()`, never write a frame before the
   headers. Each step names the failure it prevents.
-- **Two holes in the C ABI, closed while breaking it is still free.** `ag_append` and
-  `ag_encode`, without which a backplane cannot be expressed outside Node — and D3's own
-  conclusion was that the backplane is a *prerequisite* for the second binding, since
-  Gunicorn, Puma and Swoole are multi-worker by default. So the ABI currently supports
-  exactly the one deployment shape that Python, Ruby and PHP never have.
-- **A backpressure signal that is not Node-shaped.** §8.2 is fed by
+- ~~**The first hole in the C ABI: no backplane outside Node.**~~ — **Shipped** as
+  `ag_append` and `ag_encode` at **`AG_ABI_VERSION` 3000** (DECISIONS.md D9). Both take the
+  id as canonical `<ms>-<seq>` *text* rather than split halves, so §2.1's parsing rule
+  stays in the core instead of being rewritten per language. Writing the vectors for it
+  caught a second real divergence — §2 said ids were "unsigned 64-bit", which no IEEE-754
+  host can represent, so the Rust core accepted cursors the TypeScript core refused. §2 is
+  now bounded at 2^53 − 1. The corpus gained two groups and went **57 → 87 vectors**.
+- **The second hole: a backpressure signal that is not Node-shaped.** §8.2 is fed by
   `res.writableLength` — an absolute queue depth that ASGI, `net/http` and Swoole do not
   offer, because they backpressure by suspending instead. The core should also accept
   bytes-handed-over minus bytes-flushed and do the subtraction itself: one verdict rule,

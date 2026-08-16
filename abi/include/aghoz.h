@@ -52,6 +52,7 @@ extern "C" {
 #define AG_ERR_ORIGIN_EMPTY            -12   /* validator only; ag_publish never returns it */
 #define AG_ERR_ORIGIN_TOO_LONG         -13   /* 64 BYTES, not characters */
 #define AG_ERR_ORIGIN_CONTROL          -14
+#define AG_ERR_MALFORMED_ID            -15   /* not a canonical <ms>-<seq> */
 
 /* ag_note_buffer verdicts */
 #define AG_BUFFER_OK                     0
@@ -92,7 +93,10 @@ typedef struct {
 
 /* ---- lifecycle ---------------------------------------------------------- */
 
-/* major * 1000 + minor. Refuse to load a library whose major differs. */
+/* major * 1000 + minor. Refuse to load a library whose major differs.
+ *
+ * 3000 added ag_append and ag_encode. A major bump because AG_ERR_MALFORMED_ID is a
+ * status a 2000-era caller has no arm for. */
 uint32_t ag_abi_version(void);
 
 ag_hub *ag_hub_new(const ag_config *config); /* config may be NULL for all defaults */
@@ -108,6 +112,32 @@ void ag_hub_free(ag_hub *hub);
  * missing and rejecting that would make the common case the hostile one. */
 int32_t ag_publish(ag_hub *hub, uint64_t now_ms, ag_str topic, ag_str payload,
                    ag_str origin, ag_publish_result **out);
+
+/* Records an event whose id a shared sequencer assigned, and matches subscribers.
+ *
+ * The backplane counterpart to ag_publish. A per-process counter cannot be used across
+ * processes: two of them publishing in the same millisecond both mint <ms>-0, and every
+ * client's dedupe discards one of the two as already-seen. So the id arrives here rather
+ * than being drawn — from XADD, in the Redis case, which is why §2 fixed the format.
+ *
+ * id is the canonical "<ms>-<seq>" text, NOT the split halves, so that §2.1's parsing
+ * rule stays in the core rather than being rewritten once per language. Returns
+ * AG_ERR_MALFORMED_ID for anything else.
+ *
+ * Release *out with ag_publish_result_free, exactly as for ag_publish. */
+int32_t ag_append(ag_hub *hub, ag_str id, ag_str topic, ag_str payload, ag_str origin,
+                  ag_publish_result **out);
+
+/* Encodes a frame for an event whose id was assigned elsewhere, recording NOTHING.
+ *
+ * This is what replay from a shared history needs: those events are already in the shared
+ * log, so the only thing missing is their bytes. Using ag_append for this instead pushes
+ * a duplicate into the local ring on every reconnect, out of id order, which corrupts the
+ * ordering the truncation decision depends on.
+ *
+ * On AG_OK, *out receives a buffer to release with ag_buf_free. */
+int32_t ag_encode(ag_hub *hub, ag_str id, ag_str topic, ag_str payload, ag_str origin,
+                  ag_buf **out);
 
 const uint8_t *ag_publish_frame(const ag_publish_result *result, size_t *len);
 const uint64_t *ag_publish_targets(const ag_publish_result *result, size_t *count);

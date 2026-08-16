@@ -39,6 +39,12 @@ interface NativeHub {
     frame: Uint8Array
     targets: number[]
   }
+  append(id: string, topic: string, payload: string, origin?: string | null): {
+    id: string
+    frame: Uint8Array
+    targets: number[]
+  }
+  encode(id: string, topic: string, payload: string, origin?: string | null): Uint8Array
   subscribe(
     topics: string[],
     key: string | undefined | null,
@@ -62,7 +68,10 @@ interface NativeHub {
  */
 function toCoreError(error: unknown): CoreError {
   const message = error instanceof Error ? error.message : String(error)
-  if (message.includes('malformed cursor')) {
+  // Covers both "malformed cursor" and "malformed id" — the append and encode paths
+  // reject a non-canonical §2.1 id, and the TypeScript core files that under the same
+  // reason. A binding-specific third reason would be a difference the seam has no use for.
+  if (message.includes('malformed')) {
     return new CoreError('malformed-cursor', message)
   }
   if (message.includes('origin')) {
@@ -98,24 +107,20 @@ export function createNativeCore(native: NativeModule, config: CoreConfig = {}):
       }
     },
 
-    append(): never {
-      // The Rust core has no externally-assigned-id path yet. It is opt-in and does not
-      // ship (see DECISIONS.md D3), so this is a gap to close before a second language
-      // binding needs a backplane — not before Node does.
-      throw new Error(
-        'the native core does not support a backplane yet; use the TypeScript core',
-      )
+    append(id, topic, payload, origin) {
+      try {
+        return hub.append(id, topic, payload, origin ?? null)
+      } catch (error) {
+        throw toCoreError(error)
+      }
     },
 
-    encode(): never {
-      // The binding does expose `encodeFrame`, but it takes the id already split into
-      // its halves — so implementing this here would mean parsing an id in TypeScript,
-      // and §2.1's canonical form (no padding, no signs, no exponents) is precisely the
-      // kind of rule D3 exists to keep in exactly one place. It lands in Rust with the
-      // rest of the backplane path.
-      throw new Error(
-        'the native core does not support a backplane yet; use the TypeScript core',
-      )
+    encode(id, topic, payload, origin) {
+      try {
+        return hub.encode(id, topic, payload, origin ?? null)
+      } catch (error) {
+        throw toCoreError(error)
+      }
     },
 
     subscribe(topics, key, cursor) {

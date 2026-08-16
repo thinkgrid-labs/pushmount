@@ -46,7 +46,15 @@ An event id is `<ms>-<seq>`:
 - `<ms>` — Unix milliseconds, decimal, no leading zeros.
 - `<seq>` — a counter within that millisecond, decimal, no leading zeros, starting at `0`.
 
-Both are unsigned 64-bit. Example: `1755083412345-7`.
+Both are unsigned integers in `[0, 2^53 − 1]`. Example: `1755083412345-7`.
+
+The bound is 2^53 − 1 rather than 64-bit because an implementation whose integers are
+IEEE-754 doubles — JavaScript's, and every language whose JSON layer round-trips through
+one — cannot distinguish `9007199254740992` from `9007199254740993`. An id above the bound
+would name one event in one implementation and a different event in another, which makes
+the cursor mean two things. Implementations MUST reject an id outside this range rather
+than saturating or truncating it. 2^53 − 1 milliseconds is the year 287396, and 2^53 − 1
+events within a single millisecond is not a reachable limit.
 
 ### 2.1 Comparison
 

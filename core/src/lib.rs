@@ -35,7 +35,7 @@ pub use hub::{
     BufferVerdict, Checkpoint, Hub, HubConfig, PublishEffect, PublishError, SubscribeEffect,
     SubscribeError,
 };
-pub use id::EventId;
+pub use id::{EventId, MAX_ID_COMPONENT};
 pub use origin::{validate_origin, OriginError, MAX_ORIGIN_BYTES};
 pub use registry::SubscriberId;
 pub use topic::{validate_topic, TopicError, MAX_TOPIC_BYTES};

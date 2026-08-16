@@ -17,10 +17,18 @@ export const validOrigin = (origin) => native.validateOrigin(origin)
 export const compareIds = ([msA, seqA], [msB, seqB]) =>
   native.compareIds(`${msA}-${seqA}`, `${msB}-${seqB}`)
 
+export const validId = (raw) => native.validateId(raw)
+
 export function newHub(maxHistoryBytes) {
   const hub = new native.Hub(maxHistoryBytes === undefined ? {} : { maxHistoryBytes })
   return {
-    publish: (nowMs, topic, payload) => new Uint8Array(hub.publish(nowMs, topic, payload).frame),
+    publish: (nowMs, topic, payload, origin) =>
+      new Uint8Array(hub.publish(nowMs, topic, payload, origin ?? null).frame),
+    append: (id, topic, payload, origin) =>
+      new Uint8Array(hub.append(id, topic, payload, origin ?? null).frame),
+    encode: (id, topic, payload, origin) =>
+      new Uint8Array(hub.encode(id, topic, payload, origin ?? null)),
+    cursor: () => hub.cursor(),
     // The binding already reports the checkpoint as the same three strings the corpus
     // uses, so this asks the Rust core the identical question the TypeScript hub is asked.
     checkpoint: (cursor) =>

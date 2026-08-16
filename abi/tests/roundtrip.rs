@@ -360,3 +360,192 @@ fn a_rejected_origin_never_reaches_the_wire() {
     ag_publish_result_free(result);
     ag_hub_free(hub);
 }
+
+// ---------------------------------------------------------------- ABI 3000: append
+
+#[test]
+fn append_uses_the_supplied_id_and_frees_cleanly() {
+    let hub = ag_hub_new(std::ptr::null());
+    let mut result: *mut ag_publish_result = std::ptr::null_mut();
+
+    let code = ag_append(hub, s("1755083412346-4"), s("t"), s("v"), none(), &mut result);
+    assert_eq!(code, AG_OK);
+    assert_eq!(frame_of(result), "id: 1755083412346-4\nevent: t\ndata: v\n\n");
+
+    let (mut ms, mut seq) = (0u64, 0u64);
+    ag_publish_id(result, &mut ms, &mut seq);
+    assert_eq!((ms, seq), (1755083412346, 4));
+
+    ag_publish_result_free(result);
+    ag_hub_free(hub);
+}
+
+#[test]
+fn append_advances_the_cursor_so_local_ids_cannot_collide() {
+    let hub = ag_hub_new(std::ptr::null());
+    let mut result: *mut ag_publish_result = std::ptr::null_mut();
+
+    assert_eq!(ag_append(hub, s("1000-4"), s("t"), s("v"), none(), &mut result), AG_OK);
+    ag_publish_result_free(result);
+
+    let (mut ms, mut seq) = (0u64, 0u64);
+    assert_eq!(ag_cursor(hub, &mut ms, &mut seq), AG_OK);
+    assert_eq!((ms, seq), (1000, 4));
+
+    // Falling back to local assignment in the same millisecond the sequencer was using
+    // must not reissue an id another process already spent.
+    result = std::ptr::null_mut();
+    assert_eq!(ag_publish(hub, 1000, s("t"), s("v"), none(), &mut result), AG_OK);
+    assert_eq!(frame_of(result), "id: 1000-5\nevent: t\ndata: v\n\n");
+    ag_publish_result_free(result);
+    ag_hub_free(hub);
+}
+
+#[test]
+fn a_malformed_id_is_rejected_rather_than_coerced() {
+    let hub = ag_hub_new(std::ptr::null());
+    let mut result: *mut ag_publish_result = std::ptr::null_mut();
+
+    // §2.1 is canonical: no padding, no signs, no exponents, no empty halves. Coercing
+    // any of these would let two processes disagree about which event an id names.
+    for bad in ["", "1", "-0", "1-", "01-0", "1-00", "a-b", "1e5-0", " 1-0", "1-0 "] {
+        assert_eq!(
+            ag_append(hub, s(bad), s("t"), s("v"), none(), &mut result),
+            AG_ERR_MALFORMED_ID,
+            "should reject {bad:?}"
+        );
+        assert!(result.is_null(), "nothing may be allocated for {bad:?}");
+    }
+
+    // A rejected append records nothing, so the cursor has not moved.
+    let (mut ms, mut seq) = (1u64, 1u64);
+    assert_eq!(ag_cursor(hub, &mut ms, &mut seq), AG_OK);
+    assert_eq!((ms, seq), (0, 0));
+    ag_hub_free(hub);
+}
+
+#[test]
+fn append_enforces_the_same_injection_defence_as_publish() {
+    let hub = ag_hub_new(std::ptr::null());
+    let mut result: *mut ag_publish_result = std::ptr::null_mut();
+
+    assert_eq!(
+        ag_append(hub, s("1-0"), s("~gap"), s("v"), none(), &mut result),
+        AG_ERR_TOPIC_RESERVED
+    );
+    assert_eq!(
+        ag_append(hub, s("1-0"), s("t"), s("v"), s("a\nid: 9-9"), &mut result),
+        AG_ERR_ORIGIN_CONTROL
+    );
+    assert!(result.is_null());
+    ag_hub_free(hub);
+}
+
+#[test]
+fn append_matches_subscribers_like_publish() {
+    let hub = ag_hub_new(std::ptr::null());
+    let topics = [s("t")];
+    let mut sub: *mut ag_subscribe_result = std::ptr::null_mut();
+    assert_eq!(ag_subscribe(hub, topics.as_ptr(), 1, none(), 0, 0, 0, &mut sub), AG_OK);
+    let sub_id = ag_subscribe_id(sub);
+    ag_subscribe_result_free(sub);
+
+    let mut result: *mut ag_publish_result = std::ptr::null_mut();
+    assert_eq!(ag_append(hub, s("1-0"), s("t"), s("v"), none(), &mut result), AG_OK);
+    let mut count = 0usize;
+    let targets = ag_publish_targets(result, &mut count);
+    assert_eq!(count, 1);
+    assert_eq!(unsafe { *targets }, sub_id);
+    ag_publish_result_free(result);
+    ag_hub_free(hub);
+}
+
+// ---------------------------------------------------------------- ABI 3000: encode
+
+#[test]
+fn encode_produces_the_frame_publish_would_have() {
+    let hub = ag_hub_new(std::ptr::null());
+    let mut result: *mut ag_publish_result = std::ptr::null_mut();
+    assert_eq!(ag_publish(hub, 1000, s("t"), s("v"), s("tab-7"), &mut result), AG_OK);
+    let published = frame_of(result);
+    ag_publish_result_free(result);
+
+    let other = ag_hub_new(std::ptr::null());
+    let mut buf: *mut ag_buf = std::ptr::null_mut();
+    assert_eq!(ag_encode(other, s("1000-0"), s("t"), s("v"), s("tab-7"), &mut buf), AG_OK);
+    let mut len = 0usize;
+    let ptr = ag_buf_data(buf, &mut len);
+    let encoded = String::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()).unwrap();
+    ag_buf_free(buf);
+
+    assert_eq!(published, encoded, "one encoder, or the wire diverges");
+    ag_hub_free(hub);
+    ag_hub_free(other);
+}
+
+#[test]
+fn encode_records_nothing() {
+    let hub = ag_hub_new(std::ptr::null());
+    let mut buf: *mut ag_buf = std::ptr::null_mut();
+    assert_eq!(ag_encode(hub, s("9999-9"), s("t"), s("v"), none(), &mut buf), AG_OK);
+    ag_buf_free(buf);
+
+    // Neither the cursor nor history may have moved — this is the whole reason encode
+    // exists separately from append.
+    let (mut ms, mut seq) = (1u64, 1u64);
+    assert_eq!(ag_cursor(hub, &mut ms, &mut seq), AG_OK);
+    assert_eq!((ms, seq), (0, 0));
+    ag_hub_free(hub);
+}
+
+#[test]
+fn encode_rejects_what_it_must_and_allocates_nothing() {
+    let hub = ag_hub_new(std::ptr::null());
+    let mut buf: *mut ag_buf = std::ptr::null_mut();
+
+    assert_eq!(ag_encode(hub, s("nope"), s("t"), s("v"), none(), &mut buf), AG_ERR_MALFORMED_ID);
+    assert_eq!(ag_encode(hub, s("1-0"), s("~gap"), s("v"), none(), &mut buf), AG_ERR_TOPIC_RESERVED);
+    assert_eq!(
+        ag_encode(hub, s("1-0"), s("t"), s("v"), s("a\nid: 9-9"), &mut buf),
+        AG_ERR_ORIGIN_CONTROL
+    );
+    assert!(buf.is_null());
+    ag_hub_free(hub);
+}
+
+#[test]
+fn append_and_encode_reject_a_null_out_pointer() {
+    let hub = ag_hub_new(std::ptr::null());
+    assert_eq!(
+        ag_append(hub, s("1-0"), s("t"), s("v"), none(), std::ptr::null_mut()),
+        AG_ERR_NULL
+    );
+    assert_eq!(
+        ag_encode(hub, s("1-0"), s("t"), s("v"), none(), std::ptr::null_mut()),
+        AG_ERR_NULL
+    );
+    // And a null hub, which a binding hits if it ignores an ag_hub_new failure.
+    let mut result: *mut ag_publish_result = std::ptr::null_mut();
+    assert_eq!(
+        ag_append(std::ptr::null_mut(), s("1-0"), s("t"), s("v"), none(), &mut result),
+        AG_ERR_NULL
+    );
+    ag_hub_free(hub);
+}
+
+#[test]
+fn an_out_of_order_append_never_drags_the_cursor_backwards() {
+    let hub = ag_hub_new(std::ptr::null());
+    let mut result: *mut ag_publish_result = std::ptr::null_mut();
+
+    assert_eq!(ag_append(hub, s("1000-4"), s("t"), s("v"), none(), &mut result), AG_OK);
+    ag_publish_result_free(result);
+    result = std::ptr::null_mut();
+    assert_eq!(ag_append(hub, s("999-0"), s("t"), s("v"), none(), &mut result), AG_OK);
+    ag_publish_result_free(result);
+
+    let (mut ms, mut seq) = (0u64, 0u64);
+    assert_eq!(ag_cursor(hub, &mut ms, &mut seq), AG_OK);
+    assert_eq!((ms, seq), (1000, 4), "an older event must not rewind the cursor");
+    ag_hub_free(hub);
+}

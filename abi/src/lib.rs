@@ -75,6 +75,12 @@ pub const AG_ERR_ORIGIN_EMPTY: i32 = -12;
 pub const AG_ERR_ORIGIN_TOO_LONG: i32 = -13;
 /// An origin contained a C0 control character or DEL.
 pub const AG_ERR_ORIGIN_CONTROL: i32 = -14;
+/// An id was not a canonical `<ms>-<seq>` — §2.1 forbids padding, signs and exponents.
+///
+/// Only the externally-assigned-id paths can return this. Parsing lives here rather than
+/// in each binding on purpose: "which strings are ids" is exactly the class of rule that
+/// every language gets subtly wrong in its own way, and D3 exists to keep it in one place.
+pub const AG_ERR_MALFORMED_ID: i32 = -15;
 
 /// Subscriber is keeping up.
 pub const AG_BUFFER_OK: i32 = 0;
@@ -98,7 +104,14 @@ pub const AG_GAP_SLOW_CONSUMER: i32 = 1;
 /// The ABI revision. Bindings should refuse to load a library whose major differs.
 ///
 /// Encoded as `major * 1000 + minor`.
-pub const AG_ABI_VERSION: u32 = 2_000;
+///
+/// **3000** added [`ag_append`] and [`ag_encode`], without which a backplane cannot be
+/// expressed outside Node — and a backplane is a prerequisite for the second binding, not
+/// a feature after it, because Gunicorn, Puma and Swoole are multi-worker by default. A
+/// major bump rather than a minor one because [`AG_ERR_MALFORMED_ID`] is a status a
+/// version-2000 caller has no arm for. Broken deliberately while nothing has shipped and
+/// no binding exists; the alternative was a shim living forever.
+pub const AG_ABI_VERSION: u32 = 3_000;
 
 // ---------------------------------------------------------------------- types
 
@@ -234,6 +247,39 @@ fn subscribe_code(e: SubscribeError) -> i32 {
     }
 }
 
+/// Reads the three wire-bound strings every write path takes.
+///
+/// Shared by `ag_publish`, `ag_append` and `ag_encode` so the "empty origin means absent"
+/// rule cannot hold on one path and not another — the kind of divergence that shows up as
+/// a frame differing by one field depending on whether a backplane was configured.
+///
+/// # Safety
+/// Each `ag_str` must be valid for its stated length, or have length zero.
+unsafe fn write_args<'a>(
+    topic: &'a ag_str,
+    payload: &'a ag_str,
+    origin: &'a ag_str,
+) -> Result<(&'a str, &'a str, Option<&'a str>), i32> {
+    let topic = unsafe { topic.as_str() }?;
+    let payload = unsafe { payload.as_str() }?;
+    // A null pointer and a zero length both mean absent — see `ag_publish`.
+    let origin = if origin.ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { origin.as_str() }?)
+    };
+    Ok((topic, payload, origin))
+}
+
+/// Parses a caller-supplied `<ms>-<seq>`, per §2.1.
+///
+/// # Safety
+/// `id` must be valid for its stated length, or have length zero.
+unsafe fn read_id(id: &ag_str) -> Result<EventId, i32> {
+    let raw = unsafe { id.as_str() }?;
+    EventId::parse(raw).ok_or(AG_ERR_MALFORMED_ID)
+}
+
 /// Runs `f` with the hub locked, converting panics and poisoning into status codes.
 fn with_hub<F>(hub: *mut ag_hub, f: F) -> i32
 where
@@ -317,32 +363,104 @@ pub extern "C" fn ag_publish(
         return AG_ERR_NULL;
     }
     with_hub(hub, |h| {
-        let topic = match unsafe { topic.as_str() } {
-            Ok(t) => t,
+        let (topic, payload, origin) = match unsafe { write_args(&topic, &payload, &origin) } {
+            Ok(args) => args,
             Err(code) => return code,
-        };
-        let payload = match unsafe { payload.as_str() } {
-            Ok(p) => p,
-            Err(code) => return code,
-        };
-        let origin = if origin.ptr.is_null() {
-            None
-        } else {
-            match unsafe { origin.as_str() } {
-                Ok(o) => Some(o),
-                Err(code) => return code,
-            }
         };
         match h.publish(now_ms, topic, payload, origin) {
             Err(e) => publish_code(e),
-            Ok(effect) => {
-                let targets = effect.targets.iter().map(|s| s.0).collect();
-                let boxed = Box::new(ag_publish_result { effect, targets });
-                unsafe { *out = Box::into_raw(boxed) };
+            Ok(effect) => unsafe { yield_publish(effect, out) },
+        }
+    })
+}
+
+/// Records an event whose id was assigned elsewhere, and reports who should receive it.
+///
+/// The backplane counterpart to [`ag_publish`]: a shared sequencer owns id assignment, so
+/// the id arrives rather than being drawn. Per-process counters collide — two pods
+/// publishing in the same millisecond would both mint `<ms>-0` and every client's dedupe
+/// would discard one of them as already-seen — which is why this exists as its own call
+/// instead of an `ag_publish` that accepts an id.
+///
+/// `id` is a canonical `<ms>-<seq>` string, not the split halves, so that §2.1's parsing
+/// rule stays in the core. On [`AG_OK`], `*out` receives a result to release with
+/// [`ag_publish_result_free`]; on error `*out` is left untouched.
+#[no_mangle]
+pub extern "C" fn ag_append(
+    hub: *mut ag_hub,
+    id: ag_str,
+    topic: ag_str,
+    payload: ag_str,
+    origin: ag_str,
+    out: *mut *mut ag_publish_result,
+) -> i32 {
+    if out.is_null() {
+        return AG_ERR_NULL;
+    }
+    with_hub(hub, |h| {
+        let id = match unsafe { read_id(&id) } {
+            Ok(id) => id,
+            Err(code) => return code,
+        };
+        let (topic, payload, origin) = match unsafe { write_args(&topic, &payload, &origin) } {
+            Ok(args) => args,
+            Err(code) => return code,
+        };
+        match h.append(id, topic, payload, origin) {
+            Err(e) => publish_code(e),
+            Ok(effect) => unsafe { yield_publish(effect, out) },
+        }
+    })
+}
+
+/// Encodes a frame for an event whose id was assigned elsewhere, recording nothing.
+///
+/// What replay from a *shared* history needs: those events are already in the shared log,
+/// so the only thing missing is their bytes. Routing them through [`ag_append`] instead
+/// would push duplicates into the local ring on every reconnect, out of id order, which
+/// corrupts the ordering the truncation decision depends on.
+///
+/// On [`AG_OK`], `*out` receives a buffer to release with [`ag_buf_free`].
+#[no_mangle]
+pub extern "C" fn ag_encode(
+    hub: *mut ag_hub,
+    id: ag_str,
+    topic: ag_str,
+    payload: ag_str,
+    origin: ag_str,
+    out: *mut *mut ag_buf,
+) -> i32 {
+    if out.is_null() {
+        return AG_ERR_NULL;
+    }
+    with_hub(hub, |h| {
+        let id = match unsafe { read_id(&id) } {
+            Ok(id) => id,
+            Err(code) => return code,
+        };
+        let (topic, payload, origin) = match unsafe { write_args(&topic, &payload, &origin) } {
+            Ok(args) => args,
+            Err(code) => return code,
+        };
+        match h.encode(id, topic, payload, origin) {
+            Err(e) => publish_code(e),
+            Ok(bytes) => {
+                unsafe { *out = Box::into_raw(Box::new(ag_buf { bytes })) };
                 AG_OK
             }
         }
     })
+}
+
+/// Boxes a [`PublishEffect`] for the caller. Shared by `ag_publish` and `ag_append`.
+///
+/// # Safety
+/// `out` must be non-null and writable.
+unsafe fn yield_publish(effect: PublishEffect, out: *mut *mut ag_publish_result) -> i32 {
+    let targets = effect.targets.iter().map(|s| s.0).collect();
+    let boxed = Box::new(ag_publish_result { effect, targets });
+    unsafe { *out = Box::into_raw(boxed) };
+    AG_OK
 }
 
 /// The encoded frame. Valid until the result is freed.

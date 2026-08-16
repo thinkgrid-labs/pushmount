@@ -152,6 +152,86 @@ fn checkpoint_vectors() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
+/// §2.1 — which strings are ids at all.
+///
+/// This group exists because the rule reaches the wire from two directions — a client's
+/// `Last-Event-ID` and a backplane-assigned id — and because it caught a real divergence:
+/// §2 once said "unsigned 64-bit", which no JavaScript host can represent, so this core
+/// accepted ids the TypeScript one refused. See DECISIONS.md D9.
+#[test]
+fn id_parse_vectors() {
+    let c = corpus();
+    let mut failures = Vec::new();
+    for v in c["idParse"].as_array().unwrap() {
+        let raw = v["raw"].as_str().unwrap();
+        let got = EventId::parse(raw).is_some();
+        let want = v["valid"].as_bool().unwrap();
+        if got != want {
+            failures.push(format!(
+                "  {}  {}\n      expected valid={want}, got {got} for {raw:?}",
+                v["id"].as_str().unwrap(),
+                v["desc"].as_str().unwrap()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// The externally-assigned-id path — what a backplane, and therefore every multi-worker
+/// runtime, depends on.
+#[test]
+fn append_vectors() {
+    let c = corpus();
+    let mut failures = Vec::new();
+    for v in c["append"].as_array().unwrap() {
+        let mut hub = Hub::new(HubConfig::default());
+        let mut frames: Vec<String> = Vec::new();
+
+        for op in v["ops"].as_array().unwrap() {
+            let a = op.as_array().unwrap();
+            let topic = a[2].as_str().unwrap();
+            let payload = a[3].as_str().unwrap();
+            // JSON has no undefined; an absent origin arrives as null.
+            let origin = a[4].as_str();
+
+            let bytes = match a[0].as_str().unwrap() {
+                "publish" => hub
+                    .publish(a[1].as_u64().unwrap(), topic, payload, origin)
+                    .unwrap()
+                    .frame,
+                "append" => {
+                    let id = EventId::parse(a[1].as_str().unwrap()).expect("corpus id is canonical");
+                    hub.append(id, topic, payload, origin).unwrap().frame
+                }
+                "encode" => {
+                    let id = EventId::parse(a[1].as_str().unwrap()).expect("corpus id is canonical");
+                    hub.encode(id, topic, payload, origin).unwrap()
+                }
+                other => panic!("unknown op: {other}"),
+            };
+            frames.push(String::from_utf8(bytes).unwrap());
+        }
+
+        let want_frames: Vec<String> = v["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect();
+        let want_cursor = v["cursor"].as_str().unwrap();
+        let got_cursor = hub.cursor().to_string();
+
+        if frames != want_frames || got_cursor != want_cursor {
+            failures.push(format!(
+                "  {}  {}\n      expected: frames={want_frames:?} cursor={want_cursor}\n      actual:   frames={frames:?} cursor={got_cursor}",
+                v["id"].as_str().unwrap(),
+                v["desc"].as_str().unwrap()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
 #[test]
 fn monotonic_vectors() {
     let c = corpus();

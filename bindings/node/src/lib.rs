@@ -136,6 +136,56 @@ impl Hub {
         }
     }
 
+    /// Records an event whose id a backplane assigned, and returns who should get it.
+    ///
+    /// The id arrives as its canonical `<ms>-<seq>` text and is parsed here rather than
+    /// in TypeScript. §2.1's canonical form — no padding, no signs, no exponents — is
+    /// precisely the kind of rule D3 exists to keep in exactly one place.
+    #[napi]
+    pub fn append(
+        &mut self,
+        id: String,
+        topic: String,
+        payload: String,
+        origin: Option<String>,
+    ) -> Result<JsPublish> {
+        let Some(parsed) = EventId::parse(&id) else {
+            return Err(Error::new(Status::InvalidArg, format!("malformed id: {id}")));
+        };
+        let origin = origin.filter(|o| !o.is_empty());
+        match self.inner.append(parsed, &topic, &payload, origin.as_deref()) {
+            Err(e) => Err(Error::new(Status::InvalidArg, publish_message(e))),
+            Ok(effect) => Ok(JsPublish {
+                id: effect.id.to_string(),
+                frame: effect.frame.into(),
+                targets: effect.targets.iter().map(|s| s.0 as u32).collect(),
+            }),
+        }
+    }
+
+    /// Encodes a frame for an event whose id was assigned elsewhere, recording nothing.
+    ///
+    /// Replay from a *shared* history needs the bytes and nothing else — those events are
+    /// already in the shared log. Going through `append` for this instead duplicates them
+    /// into the local ring on every reconnect, out of id order.
+    #[napi]
+    pub fn encode(
+        &self,
+        id: String,
+        topic: String,
+        payload: String,
+        origin: Option<String>,
+    ) -> Result<Buffer> {
+        let Some(parsed) = EventId::parse(&id) else {
+            return Err(Error::new(Status::InvalidArg, format!("malformed id: {id}")));
+        };
+        let origin = origin.filter(|o| !o.is_empty());
+        match self.inner.encode(parsed, &topic, &payload, origin.as_deref()) {
+            Err(e) => Err(Error::new(Status::InvalidArg, publish_message(e))),
+            Ok(bytes) => Ok(bytes.into()),
+        }
+    }
+
     /// Registers a subscriber, decides the checkpoint, and snapshots the replay set.
     ///
     /// One call, because §4.5 requires the three to describe one instant. Exposing them
@@ -247,6 +297,16 @@ pub fn validate_topic(topic: String) -> bool {
 #[napi]
 pub fn validate_origin(origin: String) -> bool {
     aghoz_core::validate_origin(&origin).is_ok()
+}
+
+/// §2.1 — whether a string is a canonical id at all.
+///
+/// Exposed for the corpus, which pins this rule in its own group: a cursor and a
+/// backplane-assigned id both reach the wire, and "which strings are ids" is the kind of
+/// thing each language answers differently unless something holds them to one answer.
+#[napi]
+pub fn validate_id(id: String) -> bool {
+    EventId::parse(&id).is_some()
 }
 
 /// §2.1 — compares two ids, returning -1, 0 or 1.
