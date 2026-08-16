@@ -1,0 +1,57 @@
+{
+  "name": "@aghoz/vue",
+  "version": "0.1.0-rc.0",
+  "description": "Vue 3 client for aghoz \u2014 composables for real-time server push over Server-Sent Events (SSE), with missed updates reported rather than silently lost.",
+  "keywords": [
+    "server-sent-events",
+    "sse",
+    "realtime",
+    "real-time",
+    "push",
+    "server-push",
+    "live-updates",
+    "streaming",
+    "pubsub",
+    "websocket-alternative",
+    "eventsource",
+    "typescript",
+    "vue",
+    "vue3",
+    "composables",
+    "composition-api"
+  ],
+  "homepage": "https://github.com/thinkgrid-labs/aghoz#readme",
+  "bugs": {
+    "url": "https://github.com/thinkgrid-labs/aghoz/issues"
+  },
+  "author": "thinkgrid-labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thinkgrid-labs/aghoz.git",
+    "directory": "packages/vue"
+  },
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test"
+  },
+  "peerDependencies": {
+    "vue": ">=3.3"
+  },
+  "devDependencies": {
+    "@aghoz/client": "workspace:*",
+    "@aghoz/server": "workspace:*",
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.3",
+    "vue": "^3.5.22"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -5,6 +5,63 @@ Newest first.
 
 ---
 
+## D8 — Svelte gets stores, Vue gets a shallow ref
+
+**Date:** 16 August 2026 · **Status:** accepted
+
+`@aghoz/vue` and `@aghoz/svelte` complete v0.2. Both are thin wrappers over
+`@aghoz/client` and restate no protocol decision.
+
+### Svelte: stores, not runes
+
+Runes are the current idiom, and stores are the right answer anyway.
+
+`svelte/store` readables are plain JavaScript. One package covers Svelte 4 and Svelte 5,
+this repo's build gains no compiler step, and no rune syntax pins the package to a major
+version. Svelte 5 still auto-subscribes with `$topic`, so nothing about the rendering code
+differs. A runes implementation would have meant a `.svelte.js` module, the Svelte compiler
+in the build, and a package that could not serve Svelte 4 at all — in exchange for
+identical call sites.
+
+The lifetime comes free, which is the part that actually matters. A readable's start
+function runs on the first subscriber and its teardown after the last, so `$topic`
+auto-subscription *is* the subscription lifecycle: nothing to clean up, and no leak when a
+component is destroyed.
+
+**Consequence, made explicit rather than papered over:** a `topicReducer` restarts from
+`initial` when its subscriber count returns to zero and rises again, and it now publishes
+that reset rather than only holding it internally. A readable retains its last value across
+a stop, so the first version reported the *previous* run's final state until the next event
+arrived and then jumped to a fold that had silently dropped it. Restarting is correct — a
+fold is only meaningful over an unbroken run of events, and carrying state across a gap in
+subscription would be a fold over events it never saw — but the accumulator and what
+subscribers see have to start from the same place. Caught by the test that asserted it.
+
+### Vue: `shallowRef`, and a reactive topic
+
+The ref holding a payload is shallow. A deep `ref` would wrap every payload in a reactive
+proxy, so an object published is not `===` the object received and any identity check
+downstream silently stops working. Payloads arrive whole and are replaced whole; deep
+reactivity has nothing to do here but cost. There is a test that pins the identity.
+
+Topics accept `MaybeRefOrGetter`, unlike the React binding's plain string, because that is
+the Vue idiom and the subscription is driven by a `watch` whose cleanup both resubscribes on
+change and unsubscribes on scope disposal — one mechanism for both, rather than a call plus
+a separate `onScopeDispose`.
+
+### Both take an explicit `client`
+
+Every function in both packages accepts one, overriding injection or Svelte context.
+
+Not only for tests, though it is what makes these packages testable in bare Node with no
+jsdom and no compiler. Vue's `inject` needs a component or app context and Svelte's
+`getContext` throws outside component initialisation, so without the override neither
+binding could be used from a plain module — a store defined at module scope, a composable
+called from a router guard. Svelte's failure is also opaque (`lifecycle_outside_component`),
+so `getAghozClient` catches it and reports the two fixes by name.
+
+---
+
 ## D7 — The Nest adapter provides a hub, not a route
 
 **Date:** 16 August 2026 · **Status:** accepted

@@ -8,7 +8,7 @@
   <strong>Real-time server push for apps that already have a backend.</strong><br>
   Server-Sent Events (SSE) that mount into your existing app as a route — so your own
   authentication runs first, and per-user authorization is one line.<br>
-  <sub>Node.js today (Express, Fastify, NestJS, React). The protocol core is Rust behind a C ABI,
+  <sub>Node.js today (Express, Fastify, NestJS, React, Vue, Svelte). The protocol core is Rust behind a C ABI,
   so other languages follow.</sub>
 </p>
 
@@ -29,7 +29,7 @@ app.get('/events', hub.handler({
 No second service. No token exchange. No CORS.
 
 **aghoz** is a small, dependency-free real-time push library. It ships today for
-**Node.js** — **Express**, **Fastify**, **NestJS** and **React** — and the protocol is specified and
+**Node.js** — **Express**, **Fastify**, **NestJS**, **React**, **Vue** and **Svelte** — and the protocol is specified and
 conformance-tested independently of any one runtime, so further languages are a binding
 rather than a rewrite. It replaces polling (`refetchInterval`,
 `setInterval` + `fetch`) with live server-to-client updates over **Server-Sent Events**,
@@ -56,7 +56,7 @@ protocol core behind a C ABI for other languages.
 >
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
 > by a shared [conformance corpus](./conformance/) of 57 vectors that every
-> implementation runs; the packages pass 183 tests plus 33 in Rust (11 of the 183 are
+> implementation runs; the packages pass 202 tests plus 33 in Rust (11 of the 202 are
 > backplane tests that skip themselves without a live Redis — CI provides one); and the
 > [example app](./examples/express-react) runs end to end, verified in CI. Every
 > significant decision — including the two that were reversed — is recorded with its
@@ -75,6 +75,7 @@ protocol core behind a C ABI for other languages.
 - [Quickstart](#quickstart) — [server](#server--three-additions-to-an-app-you-already-have) · [client](#client) · [collections](#collections-need-a-fold-not-a-cell)
 - [Things that will bite you](#things-that-will-bite-you)
 - [Multiple processes (Redis backplane)](#multiple-processes-redis-backplane)
+- [Vue and Svelte](#vue-and-svelte)
 - [NestJS](#nestjs)
 - [Observability](#observability)
 - [Packages](#packages)
@@ -353,6 +354,56 @@ buys an ordering that is identical in every process.
 
 ---
 
+## Vue and Svelte
+
+Both are thin wrappers over `@aghoz/client`: one connection for the app, and a reactive
+value where you render. Neither restates a protocol decision — gap detection, replay and
+the cursor all belong to the client.
+
+**Vue 3** (`@aghoz/vue`) — provide once in a root `setup()`, then use composables:
+
+```vue
+<script setup>
+import { provideAghoz, useTopicReducer } from '@aghoz/vue'
+
+provideAghoz({ url: '/events', initialCursor: props.cursor, onGap: () => refetch() })
+
+// The topic may be a ref or a getter; changing it resubscribes.
+const orders = useTopicReducer('org/42/orders', (list, order) => [...list, order], [])
+</script>
+```
+
+The returned ref is **shallow**, deliberately. A deep one would wrap every payload in a
+reactive proxy, so an object you published would not be `===` the object you receive and
+any identity check downstream would silently stop working. Payloads arrive whole and are
+replaced whole; there is nothing for deep reactivity to do but cost.
+
+**Svelte** (`@aghoz/svelte`) — set the client in context, then use stores:
+
+```svelte
+<script>
+  import { setAghozClient, topic } from '@aghoz/svelte'
+  export let cursor
+
+  setAghozClient({ url: '/events', initialCursor: cursor, onGap: () => refetch() })
+  const total = topic('org/42/revenue', 0)
+</script>
+
+<p>{$total}</p>
+```
+
+These are `svelte/store` readables rather than runes. One package therefore covers Svelte
+4 and 5 with no compiler step and no rune syntax pinning it to a major version — and the
+lifetime comes free: a readable starts on its first subscriber and tears down after its
+last, so `$total` auto-subscription *is* the subscription lifecycle. Nothing to clean up,
+and no leak when a component is destroyed.
+
+Every function in both packages accepts an explicit `client`, which is what makes them
+usable outside a component — in a plain module, or a test, where injection and Svelte
+context cannot be read.
+
+---
+
 ## NestJS
 
 ```sh
@@ -497,6 +548,8 @@ it reports the consequence rather than the cause.
 | `@aghoz/client` | Framework-agnostic browser client. Zero dependencies. |
 | `@aghoz/react` | React provider and hooks (`useTopic`, `useTopicReducer`). React 18+ peer only. |
 | `@aghoz/react-query` | TanStack Query adapter: topics mapped onto query keys, gaps included. Optional. |
+| `@aghoz/vue` | Vue 3 composables (`useTopic`, `useTopicReducer`). Vue 3.3+ peer only. |
+| `@aghoz/svelte` | Svelte stores (`topic`, `topicReducer`). Svelte 4 and 5, peer only. |
 | `@aghoz/fastify` | Fastify adapter. Optional. |
 | `@aghoz/nest` | NestJS adapter: DI module plus a handler for your own controller. Express and Fastify platforms. Optional. |
 | `@aghoz/redis` | Redis Streams backplane, for multi-process deployments. Optional. |
@@ -647,7 +700,11 @@ core with a C ABI and a Node binding, not shipped.
 - **Nest adapter.** Note that Nest's own `@Sse()` decorator cannot be used — it writes
   the response itself, so the checkpoint header is unreachable and gap detection becomes
   impossible. Same reason the client avoids `EventSource`.
-- Vue and Svelte clients — thin wrappers over `@aghoz/client`.
+- ~~Vue and Svelte clients — thin wrappers over `@aghoz/client`.~~ — **shipped** as
+  `@aghoz/vue` and `@aghoz/svelte`. Vue exposes composables over a shallow ref and
+  accepts a reactive topic; Svelte exposes `svelte/store` readables rather than runes, so
+  one package covers Svelte 4 and 5 and `$topic` auto-subscription *is* the subscription
+  lifecycle.
 - ~~`originId` echoed on frames~~ — **shipped** as the `origin` field (PROTOCOL.md §6.0),
   so the tab that issued a write skips its own event instead of applying it twice, once
   from the HTTP response and once from the stream.
