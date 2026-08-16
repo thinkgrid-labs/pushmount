@@ -717,14 +717,46 @@ core with a C ABI and a Node binding, not shipped.
   rejections bucketed by cause, because a total filed under the wrong reason sends you
   after the wrong problem. Counters only; rates are the caller's to derive.
 
-### v0.3 — more than one runtime
+### v0.3 — the adapter foundation
 
-- Postgres `LISTEN`/`NOTIFY` backplane, for teams who do not want Redis. Note it will
-  need its own sequencer, since Postgres has no equivalent of `XADD`'s id.
-- A backplane path in the Rust core, which it does not have yet.
-- The second language binding — Python via PyO3, or Go via cgo. Python and Ruby deploy
-  multi-worker by default, so the backplane is a prerequisite there rather than an
-  option.
+The Rust core and the C ABI are the shared half of a language port. This milestone is
+about the *other* half — and the honest accounting is that the two halves are the same
+size. The core is ~915 lines and every one of them is pinned by the conformance corpus;
+the HTTP layer above it is ~950 lines and the corpus does not reach a single one. Until
+that changes, "a binding rather than a rewrite" is a claim about half the work.
+
+- **`ADAPTERS.md`** — the porting contract, plus an `abi/README.md` covering ownership,
+  threading and the version check. §4 states its requirements as MUSTs; what it does not
+  state is that they have an *order*, and the order is the part that only fails in
+  production. Register before you await, register teardown before you await, re-check the
+  connection after it, delete from the map before `end()`, never write a frame before the
+  headers. Each step names the failure it prevents.
+- **Two holes in the C ABI, closed while breaking it is still free.** `ag_append` and
+  `ag_encode`, without which a backplane cannot be expressed outside Node — and D3's own
+  conclusion was that the backplane is a *prerequisite* for the second binding, since
+  Gunicorn, Puma and Swoole are multi-worker by default. So the ABI currently supports
+  exactly the one deployment shape that Python, Ruby and PHP never have.
+- **A backpressure signal that is not Node-shaped.** §8.2 is fed by
+  `res.writableLength` — an absolute queue depth that ASGI, `net/http` and Swoole do not
+  offer, because they backpressure by suspending instead. The core should also accept
+  bytes-handed-over minus bytes-flushed and do the subtraction itself: one verdict rule,
+  two ways of feeding it, both still in Rust.
+- **An HTTP conformance suite.** The corpus covers `encode`, `topic`, `origin`,
+  `idOrder`, `monotonic` and `checkpoint` — all pure functions of the core, and so all
+  already identical everywhere by construction. An adapter can pass 57/57 and still omit
+  a header, compute the checkpoint after an interleaved publish, answer 403 where 429
+  belongs, or leak a subscriber on abort. This is a black-box scenario corpus driven over
+  real HTTP against a small reference app each adapter ships, and it is what turns "write
+  your own adapter" from an invitation into a contract. Seed it with the bugs already paid
+  for: a publish landing during backplane replay, an abort mid-replay, a deliberate drop
+  whose recorded cause must not be `client`.
+- **Go via cgo, as the proof.** Not for Go adoption — because Go is the only candidate not
+  gated behind the backplane work above (one process, goroutines, no shared log needed to
+  be honest), so it is the cheapest way to discover that the checklist is wrong somewhere.
+  Better found here than in a stranger's issue tracker.
+
+Postgres `LISTEN`/`NOTIFY`, for teams who do not want Redis, belongs in this era too. It
+will need its own sequencer, since Postgres has no equivalent of `XADD`'s id.
 
 ### v0.4 — the browser side
 
@@ -733,11 +765,53 @@ core with a C ABI and a Node binding, not shipped.
   fanning out fixes it.
 - Persistent history — a disk-backed ring, so replay survives a restart.
 
+### v0.5 — adapters in other languages
+
+Only once v0.3 lands is any of this a claim that can be supported.
+
+- **Python, on FastAPI/Starlette**, as the first officially maintained non-Node adapter.
+  Worth separating from "Python support": Uvicorn holds a connection cheaply, while Flask
+  on WSGI ties up a synchronous worker for the life of every reader — ten readers is ten
+  workers gone. Flask should be documented as unsupported rather than left to be
+  discovered. The binding is likely `ctypes`/`cffi` rather than PyO3, for the same reason
+  Node ships TypeScript by default: a prebuilt shared library in a pure-Python wheel is
+  "install and go", and a build-from-source matrix is not.
+- **PHP, narrowed rather than excluded.** D3 said PHP is out; that is right about PHP-FPM
+  and `mod_php`, whose request-per-process model cannot hold a connection at all, and
+  wrong about PHP. FrankenPHP's worker mode and Laravel Octane on Swoole or RoadRunner are
+  mainstream deployment targets that hold connections for the life of a page, and
+  `FFI::cdef` is in core — so a binding is a PHP file plus a prebuilt `.so`, with no
+  extension to compile. All three are multi-worker, so the backplane is a hard prerequisite
+  here as well.
+- **Versioning across implementations.** §11's "no version field; a breaking change takes
+  a new mount path" is defensible for one implementation you control and untenable across
+  adapters you do not. The corpus version bumps whenever a vector's expected value changes,
+  each adapter reports the version it passes, and the README carries an adapter table —
+  runtime, corpus version, HTTP suite status — which is also the honest place to say which
+  ones are maintained here and which are merely listed.
+
+Adapters stay in-tree until at least two non-Node ones exist. ABI and corpus churn is
+fastest when one commit can change all of it and CI runs everything.
+
+**Not this, ever: a localhost sidecar** for runtimes that are awkward to bind. It would
+work, and it would quietly undo the premise. The argument against Mercure and Centrifugo
+is that a hub outside your application has never seen your user table, so authorization
+has to be rebuilt as a token subsystem — and a sidecar on `localhost` has exactly the same
+blindness. A shorter network hop is not a different architecture. The moment
+`authorize(req, topic)` is answered across a socket rather than as a function call, the
+thing this library exists to delete is back.
+
 ### v1.0
 
 - The standalone Rust hub, speaking the same wire format, for teams who outgrow
   in-process. `@aghoz/client` works against either unchanged: Node is the on-ramp,
   the binary is the escape hatch.
+
+  This is not the sidecar rejected above, and the difference is who chooses it and why. A
+  team reaching for the standalone hub has outgrown one process and is accepting the token
+  subsystem knowingly, in exchange for scaling the hub independently of the app. A sidecar
+  would impose that same cost on someone whose only problem was that their language is
+  awkward to bind — paying the price without getting the thing it buys.
 
 ### Ideas, not commitments
 
