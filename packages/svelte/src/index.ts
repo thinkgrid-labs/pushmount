@@ -29,6 +29,7 @@ import {
   type ClientState,
   type EventMeta,
   type GapReason,
+  type RequestHeaders,
 } from '@aghoz/client'
 
 const AGHOZ_KEY = Symbol.for('aghoz.client')
@@ -51,6 +52,12 @@ export interface SetAghozOptions {
   onGap?: (reason: GapReason, topics: readonly string[]) => void
   onDenied?: (topics: readonly string[]) => void
   onError?: (error: unknown) => void
+  /** Fetch credentials mode. Use `include` for cross-origin cookie authentication. */
+  credentials?: RequestCredentials
+  /** Static headers or a factory re-evaluated on every reconnect. */
+  headers?: RequestHeaders
+  /** Injectable transport for tests or runtimes with a non-global fetch. */
+  fetch?: typeof globalThis.fetch
   /** Supply your own client — useful in tests, or to share one across two apps. */
   client?: Client
 }
@@ -83,6 +90,9 @@ export function setAghozClient(options: SetAghozOptions): Client {
       ...(options.onGap !== undefined && { onGap: options.onGap }),
       ...(options.onDenied !== undefined && { onDenied: options.onDenied }),
       ...(options.onError !== undefined && { onError: options.onError }),
+      ...(options.credentials !== undefined && { credentials: options.credentials }),
+      ...(options.headers !== undefined && { headers: options.headers }),
+      ...(options.fetch !== undefined && { fetch: options.fetch }),
     } satisfies ClientOptions)
 
   setContext(AGHOZ_KEY, client)

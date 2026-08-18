@@ -21,6 +21,7 @@ import {
   type ClientState,
   type EventMeta,
   type GapReason,
+  type RequestHeaders,
 } from '@aghoz/client'
 
 const AghozContext = createContext<Client | null>(null)
@@ -43,13 +44,30 @@ export interface AghozProviderProps {
   onGap?: (reason: GapReason, topics: readonly string[]) => void
   onDenied?: (topics: readonly string[]) => void
   onError?: (error: unknown) => void
+  /** Fetch credentials mode. Use `include` for cross-origin cookie authentication. */
+  credentials?: RequestCredentials
+  /** Static headers or a factory re-evaluated on every reconnect. */
+  headers?: RequestHeaders
+  /** Injectable transport for tests or runtimes with a non-global fetch. */
+  fetch?: typeof globalThis.fetch
   /** Supply your own client — useful in tests, or to share one across two trees. */
   client?: Client
   children?: ReactNode
 }
 
 export function AghozProvider(props: AghozProviderProps): ReactNode {
-  const { url, initialCursor, onGap, onDenied, onError, client: provided, children } = props
+  const {
+    url,
+    initialCursor,
+    onGap,
+    onDenied,
+    onError,
+    credentials,
+    headers,
+    fetch,
+    client: provided,
+    children,
+  } = props
 
   // Callbacks live behind a ref so that a parent re-render with new inline functions
   // does not tear down the connection. Reconnecting because a component re-rendered
@@ -65,10 +83,14 @@ export function AghozProvider(props: AghozProviderProps): ReactNode {
       onDenied: (topics) => callbacks.current.onDenied?.(topics),
       onError: (error) => callbacks.current.onError?.(error),
       ...(initialCursor !== undefined && { initialCursor }),
+      ...(credentials !== undefined && { credentials }),
+      ...(headers !== undefined && { headers }),
+      ...(fetch !== undefined && { fetch }),
     }
     return createClient(options)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- url/cursor identify the connection
-  }, [provided, url, initialCursor])
+    // Request configuration also identifies the connection. Keep header factories and
+    // injected fetch functions stable (module scope or useCallback) to avoid replacing it.
+  }, [provided, url, initialCursor, credentials, headers, fetch])
 
   useEffect(() => {
     // Only close a client this provider created; a supplied one is the caller's.
@@ -189,4 +211,4 @@ export function useTopicReducer<S, T = unknown>(
   return state
 }
 
-export type { Client, ClientState, GapReason, EventMeta } from '@aghoz/client'
+export type { Client, ClientState, GapReason, EventMeta, RequestHeaders } from '@aghoz/client'

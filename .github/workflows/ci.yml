@@ -112,6 +112,44 @@ jobs:
       - run: pnpm -r build
       - run: pnpm conformance:http
 
+  # Reko's API runs NestJS on Bun. Node remains the supported server runtime, while this
+  # production-shaped lane makes Bun 1.3.14 compatibility explicit and regression-tested:
+  # the entire HTTP corpus plus the Nest Express and Redis Streams paths used by Reko.
+  bun-runtime:
+    name: bun 1.3.14 compatibility (Nest + Redis)
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - name: HTTP conformance corpus on Bun
+        run: pnpm conformance:http:bun
+      - name: NestJS Express stream on Bun
+        run: pnpm smoke:bun:nest
+      - name: Redis Streams fan-out and replay on Bun
+        run: pnpm smoke:bun:redis
+        env:
+          REDIS_PORT: 6379
+
   # `core/` reads the same vectors.json the JavaScript runner does. Once the bindings
   # land (DECISIONS.md D3) this job is what proves every language agrees.
   conformance-rust:

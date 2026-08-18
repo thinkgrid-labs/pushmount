@@ -166,6 +166,44 @@ test('five tabs elect one leader and open exactly one connection', async () => {
   }
 })
 
+test('the elected leader forwards credentials and refreshes dynamic headers', async () => {
+  const s = await boot()
+  const locks = fakeLocks()
+  const name = `auth-${Math.random().toString(36).slice(2)}`
+  const calls = []
+  let token = 'first'
+  const client = createSharedClient({
+    url: s.url,
+    name,
+    locks,
+    channel: () => new BroadcastChannel(name),
+    debounceMs: 5,
+    baseBackoffMs: 20,
+    credentials: 'include',
+    headers: () => ({ authorization: `Bearer ${token}` }),
+    fetch: (input, init) => {
+      calls.push(init)
+      return fetch(input, init)
+    },
+  })
+
+  try {
+    client.subscribe('private/topic', () => {})
+    await until(() => client.isLeader && client.state === 'open', 3000, 'authenticated leader')
+
+    assert.equal(calls[0].credentials, 'include')
+    assert.equal(calls[0].headers.get('authorization'), 'Bearer first')
+
+    token = 'refreshed'
+    s.hub.disconnect(() => true)
+    await until(() => calls.length === 2 && client.state === 'open', 3000, 'leader reconnect')
+    assert.equal(calls[1].headers.get('authorization'), 'Bearer refreshed')
+  } finally {
+    client.close()
+    await s.close()
+  }
+})
+
 test('a tab that joins later attaches to the existing leader rather than connecting', async () => {
   const s = await boot()
   const { tabs, locks, name, closeAll } = openTabs(1, s.url)
