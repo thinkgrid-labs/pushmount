@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="600" viewBox="0 0 1120 600" role="img" aria-labelledby="title desc">
+  <title id="title">How Aghoz carries backend changes to browsers and mobile clients</title>
+  <desc id="desc">Database changes enter a durable event path, pass through the authorization-aware Aghoz gateway, stream to foreground clients, and use APNs or FCM as a background wake-up signal. Clients refetch snapshots when replay cannot close a gap.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#101b31"/>
+    </linearGradient>
+    <linearGradient id="aghoz" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <style>
+      .box { fill:#111d33; stroke:#334155; stroke-width:1.5 }
+      .primary { fill:url(#aghoz); stroke:#5eead4; stroke-width:1.5 }
+      .title { fill:#f8fafc; font:700 18px ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif }
+      .label { fill:#e2e8f0; font:600 15px ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif }
+      .small { fill:#94a3b8; font:13px ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif }
+      .tiny { fill:#64748b; font:12px ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif }
+      .line { fill:none; stroke:#64748b; stroke-width:2.5; marker-end:url(#arrow) }
+      .return { fill:none; stroke:#475569; stroke-width:2; stroke-dasharray:7 7; marker-end:url(#arrow) }
+      .pulse { fill:#5eead4; filter:url(#glow) }
+      .push { fill:#fbbf24; filter:url(#glow) }
+      @media (prefers-reduced-motion: reduce) {
+        animateMotion { display:none }
+      }
+    </style>
+  </defs>
+
+  <rect width="1120" height="600" rx="24" fill="url(#bg)"/>
+  <text x="42" y="48" class="title">Aghoz at the application edge</text>
+  <text x="42" y="74" class="small">Durable inside, authorized at the boundary, snapshot-based recovery on the client.</text>
+
+  <rect x="42" y="142" width="190" height="112" rx="16" class="box"/>
+  <text x="137" y="178" text-anchor="middle" class="label">Database + API</text>
+  <text x="137" y="204" text-anchor="middle" class="small">source of truth</text>
+  <text x="137" y="226" text-anchor="middle" class="small">writes stay HTTP / RPC</text>
+
+  <rect x="300" y="142" width="210" height="112" rx="16" class="box"/>
+  <text x="405" y="177" text-anchor="middle" class="label">Durable event path</text>
+  <text x="405" y="203" text-anchor="middle" class="small">outbox / CDC</text>
+  <text x="405" y="225" text-anchor="middle" class="small">Redis Streams · Kafka · NATS</text>
+
+  <rect x="578" y="125" width="218" height="146" rx="20" class="primary"/>
+  <text x="687" y="167" text-anchor="middle" class="title">Aghoz</text>
+  <text x="687" y="195" text-anchor="middle" class="label">edge event stream</text>
+  <text x="687" y="222" text-anchor="middle" class="small" fill="#dbeafe">auth · topics · replay · gaps</text>
+  <text x="687" y="244" text-anchor="middle" class="small" fill="#dbeafe">one route in your backend</text>
+
+  <rect x="868" y="102" width="210" height="96" rx="16" class="box"/>
+  <text x="973" y="139" text-anchor="middle" class="label">Browser</text>
+  <text x="973" y="165" text-anchor="middle" class="small">stream while the page is open</text>
+
+  <rect x="868" y="235" width="210" height="96" rx="16" class="box"/>
+  <text x="973" y="272" text-anchor="middle" class="label">Mobile foreground</text>
+  <text x="973" y="298" text-anchor="middle" class="small">streaming HTTP body</text>
+
+  <rect x="578" y="374" width="218" height="94" rx="16" class="box"/>
+  <text x="687" y="410" text-anchor="middle" class="label">APNs / FCM</text>
+  <text x="687" y="436" text-anchor="middle" class="small">wake-up hint, not state</text>
+
+  <rect x="868" y="374" width="210" height="94" rx="16" class="box"/>
+  <text x="973" y="410" text-anchor="middle" class="label">Mobile background</text>
+  <text x="973" y="436" text-anchor="middle" class="small">OS may delay or coalesce</text>
+
+  <path id="p1" d="M232 198 H300" class="line"/>
+  <path id="p2" d="M510 198 H578" class="line"/>
+  <path id="p3" d="M796 174 C830 174 830 150 868 150" class="line"/>
+  <path id="p4" d="M796 220 C830 220 830 283 868 283" class="line"/>
+  <path id="p5" d="M405 254 V421 H578" class="line"/>
+  <path id="p6" d="M796 421 H868" class="line"/>
+
+  <circle cx="232" cy="198" r="5" class="pulse">
+    <animateMotion path="M0 0 H68" dur="3.6s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="510" cy="198" r="5" class="pulse">
+    <animateMotion path="M0 0 H68" dur="3.6s" begin=".8s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="796" cy="174" r="5" class="pulse">
+    <animateMotion path="M0 0 C34 0 34 -24 72 -24" dur="3.6s" begin="1.6s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="796" cy="220" r="5" class="pulse">
+    <animateMotion path="M0 0 C34 0 34 63 72 63" dur="3.6s" begin=".8s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="405" cy="254" r="5" class="push">
+    <animateMotion path="M0 0 V167 H173" dur="4.2s" begin=".4s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="796" cy="421" r="5" class="push">
+    <animateMotion path="M0 0 H72" dur="3.6s" begin="1.6s" repeatCount="indefinite"/>
+  </circle>
+
+  <path d="M973 331 V350 C973 517 694 538 348 538 C195 538 137 474 137 254" class="return"/>
+  <text x="553" y="564" text-anchor="middle" class="small">resume with cursor · replay if retained · refetch snapshot on gap</text>
+
+  <text x="259" y="183" text-anchor="middle" class="tiny">commit</text>
+  <text x="544" y="183" text-anchor="middle" class="tiny">accepted event</text>
+  <text x="832" y="126" text-anchor="middle" class="tiny">SSE</text>
+  <text x="832" y="275" text-anchor="middle" class="tiny">stream</text>
+  <text x="826" y="403" text-anchor="middle" class="tiny">push</text>
+</svg>

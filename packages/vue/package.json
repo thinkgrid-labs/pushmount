@@ -1,7 +1,7 @@
 {
   "name": "@aghoz/vue",
   "version": "0.4.0",
-  "description": "Vue 3 client for aghoz — composables for real-time server push over Server-Sent Events (SSE), with missed updates reported rather than silently lost.",
+  "description": "Vue 3 client for Aghoz — composables for resumable edge event streams with explicit replay gaps.",
   "keywords": [
     "server-sent-events",
     "sse",

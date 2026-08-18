@@ -7,6 +7,12 @@ The short version: **you are not implementing the protocol.** The protocol lives
 Rust crate behind a C ABI, and you bind to it. What you write is the HTTP layer — sockets,
 headers, ordering, teardown — which is not portable and should not be forced through FFI.
 
+The product boundary matters when porting it: this is a resumable edge stream for
+ephemeral UI clients, not a durable broker consumer. A cursor records receipt, not
+successful handler processing, and replay begins only after the hub or backplane accepts
+an event. Do not add client acknowledgements or database transaction claims in an adapter;
+those would define a different protocol.
+
 ```
   core/        Rust      ids, validation, encoding, history, checkpoint, backpressure
   abi/         C ABI     27 functions, the surface you bind to
@@ -41,6 +47,11 @@ nothing else in this document will help.
 backplane is a prerequisite, not a later feature: without one, a publish in one worker
 reaches a fraction of your subscribers and *nothing errors*. Use `ag_append` and
 `ag_encode` (below) — they exist for exactly this.
+
+**Does your backplane have one total order?** The current wire cursor does. Redis Streams
+fits because `XADD` supplies one sequence. Kafka and similar logs offset each partition
+independently; using more than one partition requires a cursor vector or edge sequencer,
+not an adapter-local conversion that discards partition position.
 
 **Can you inject a clock?** The HTTP conformance suite pins `now()` so that ids are
 deterministic and frames compare byte-for-byte. If your API cannot accept an injected

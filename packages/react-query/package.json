@@ -1,7 +1,7 @@
 {
   "name": "@aghoz/react-query",
   "version": "0.4.0",
-  "description": "TanStack Query adapter for aghoz — map SSE topics onto query keys so live updates and missed updates both flow into the cache. Delete refetchInterval.",
+  "description": "TanStack Query adapter for aghoz — map edge-stream topics and replay gaps onto query invalidation while the ordinary API remains authoritative.",
   "keywords": [
     "server-sent-events",
     "sse",

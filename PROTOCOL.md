@@ -1,6 +1,6 @@
 # aghoz wire protocol
 
-**Version:** 0.1 (draft) · **Status:** normative · **Last updated:** 13 August 2026
+**Version:** 0.1 (draft) · **Status:** normative · **Last updated:** 18 August 2026
 
 This document is the authoritative definition of the aghoz wire format. Where this
 document and any implementation disagree, this document is correct and the implementation
@@ -23,6 +23,16 @@ protocol without adopting our branding. A conformance test asserts it.
 **Not in this protocol.** There is no client-to-server messaging. The client never sends
 anything but the two requests below. Writes go through the application's existing API.
 
+This protocol begins when an event is accepted by a hub or backplane. It cannot observe a
+database commit for which application code never published an event, and it does not make
+the database transaction and publication atomic. Applications that require that boundary
+to be durable need a transactional outbox or CDC.
+
+A cursor records **receipt of frames**, not successful application processing. There is no
+client acknowledgement in this protocol, no durable consumer identity, and no retry of an
+individual event whose application handler failed. This is a resumable edge stream, not a
+Kafka consumer protocol exposed to browsers.
+
 ---
 
 ## 1. Terminology
@@ -32,7 +42,7 @@ anything but the two requests below. Writes go through the application's existin
 | **hub** | The in-process object holding recent events and open subscribers. |
 | **event** | One published item: an id, a topic, and a payload. |
 | **topic** | An opaque byte string a subscriber matches on. |
-| **cursor** | An event id a client presents to resume from. |
+| **cursor** | The id of the last data frame a client received and presents to resume from. |
 | **history** | The hub's bounded ring of recent events, oldest to newest. |
 | **subscriber** | One open response, holding one or more topics. |
 | **gap** | A period during which a subscriber provably missed events. |
@@ -459,7 +469,9 @@ Sent at most once per connection, before any replay, when §4.3 applies.
 
 ## 8. Loss conditions
 
-Two conditions, one client-facing callback.
+Two transport conditions, one client-facing callback. Both describe events the hub or
+backplane accepted. They do not detect a missing publication before acceptance or a
+failure inside an application handler after receipt.
 
 ### 8.1 `history-truncated`
 
@@ -517,15 +529,31 @@ A client MUST track the id of the last data frame it received, reconnect with it
 discard any received event whose id is not greater than the last id it delivered to the
 application (§2.1 comparison). Control frames carry no id and MUST NOT update the cursor.
 
+The client MAY advance the cursor before invoking application handlers so one throwing
+handler cannot block every topic multiplexed on the connection. Consequently the cursor
+MUST NOT be described as an acknowledgement that handlers completed. A client or cache
+adapter that folds payloads into state SHOULD invalidate and read an authoritative
+snapshot when parsing or handling fails.
+
 ### 9.3 Topic-set changes
 
 There is no client-to-server channel, so a topic cannot be added to a live connection. On
 a topic-set change a client MUST close the connection and reopen it with the new set and
 its current cursor.
 
-This is correct by construction — it reuses the replay path that must exist anyway — but
-it means topic churn costs a reconnect and a replay scan. Debouncing (§9.1) is what makes
-it acceptable. Clients SHOULD enforce a maximum topic count (64 by default) consistent with
+This preserves the replay contract for topics already in the old set, but a global cursor
+does **not** establish a baseline for a newly added topic. An event for new topic `b` can
+be assigned id 11 while the old connection still carries only `a`; an `a` event with id
+12 can then advance the cursor before the replacement connection opens. Reconnecting for
+`a,b` from 12 cannot replay `b`'s id 11, and no history gap occurred.
+
+An application that adds a topic lazily MUST therefore read or invalidate that topic's
+authoritative snapshot after the replacement stream opens, unless it already holds a
+baseline explicitly paired with a cursor that covers the new topic. A client MUST NOT
+present the global cursor alone as proof that a newly added topic is current.
+
+Topic churn also costs a reconnect and a replay scan. Debouncing (§9.1) is what makes it
+acceptable. Clients SHOULD enforce a maximum topic count (64 by default) consistent with
 §4.1's length guidance.
 
 ### 9.4 Reconnection
@@ -653,3 +681,11 @@ Tracked here rather than in issues until v0.1 ships.
    detectable and no backplane is configured. A Redis Streams backplane ships; a Postgres
    `LISTEN`/`NOTIFY` one is planned, and will need its own sequencer since Postgres has no
    equivalent of `XADD`'s id.
+5. **Topic-set cutover.** §9.3 states the safe application rule for a lazily added topic,
+   but the client API does not yet make "replacement stream is open" a topic-scoped event.
+   Before the wire format freezes, decide whether an implementation-level guarantee needs
+   per-topic cursors, stable feed scopes, or an explicit ready/invalidate callback.
+6. **Partitioned backplanes.** One cursor currently names one total sequence. Kafka and
+   other partitioned logs order and offset each partition independently. Supporting them
+   without a single-partition bottleneck requires a cursor vector or an edge sequencer;
+   neither can be hidden inside an adapter without changing protocol semantics.

@@ -5,6 +5,66 @@ Newest first.
 
 ---
 
+## D16 — The product is an edge event stream, not Kafka for browsers
+
+**Date:** 18 August 2026 · **Status:** accepted
+
+### The analogy found the right mechanics and the wrong consumer
+
+Aghoz has topics, a monotonic position, bounded history, replay and an explicit answer
+when a position falls outside retention. Those are log-shaped mechanics, so "Kafka
+between server and browser" is a useful design prompt.
+
+Taken literally, it promises the wrong system. Kafka consumers have partition offsets,
+consumer-group membership and acknowledgements or committed positions. Aghoz has one
+ephemeral UI connection, advances its cursor when a frame is received, and deliberately
+does not wait for application handlers to succeed. Giving every browser tab or phone a
+durable broker consumer would also move untrusted-client authentication, offset expiry
+and device lifecycle into the broker — the complexity mounting inside the application
+exists to avoid.
+
+### Decision: Kafka-like replay inside an application-owned edge
+
+The category is **resumable, authorized edge event stream**. The application database and
+ordinary APIs remain the source of truth. Aghoz carries low-latency invalidations or
+events to active UI clients, using the host's authentication, and either replays accepted
+events after interruption or tells the client to read a fresh snapshot.
+
+Kafka, NATS, Redis Streams, an outbox or CDC may sit behind that edge. They are internal
+durability and fan-out mechanisms, not browser transports. The distinction preserves the
+small in-process on-ramp while leaving a durable ingestion path available when a database
+commit must not outrun publication.
+
+The delivery claim stops at explicit boundaries:
+
+- gap detection covers events the hub or backplane accepted, not a commit that was never
+  published;
+- the cursor means a frame was received, not that every application handler completed;
+- browser and mobile clients are ephemeral observers, not durable consumer groups; and
+- direct event folding is an optimization, while snapshot invalidation is the safe
+  default.
+
+### Mobile is two transports sharing one recovery model
+
+A foreground native client can hold the same streaming HTTP response as a browser. A
+backgrounded app cannot own liveness; iOS and Android may suspend it regardless of the
+socket. APNs or FCM therefore carries only a wake-up hint. On resumption the client uses
+its persisted cursor, replays what retention still covers, and refetches when it does not.
+
+The push notification is allowed to be delayed, coalesced or lost because it is never the
+authoritative event log. Foreground streaming and background push are different delivery
+paths with the same snapshot-based recovery rule.
+
+### Consequences before the protocol freeze
+
+The reframe exposes two design questions that a global cursor had hidden. A cursor built
+while subscribing to `a` does not establish initial state for a lazily added `b`, and one
+global Redis stream makes every tenant share retention and replay work. Topic-set cutover
+and partitioned cursor semantics are therefore freeze gates, not adapter details. They are
+tracked in PROTOCOL.md §13 and the README roadmap.
+
+---
+
 ## D15 — A lock handoff conveys one bit, so the tab registry is rediscovered rather than inherited
 
 **Date:** 16 August 2026 · **Status:** accepted

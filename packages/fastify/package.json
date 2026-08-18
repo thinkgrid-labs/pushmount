@@ -1,7 +1,7 @@
 {
   "name": "@aghoz/fastify",
   "version": "0.4.0",
-  "description": "Fastify adapter for aghoz — real-time server push over Server-Sent Events (SSE), mounted as a route inside your existing Fastify app.",
+  "description": "Fastify adapter for Aghoz resumable edge event streams, mounted as a route inside your existing Fastify app.",
   "keywords": [
     "server-sent-events",
     "sse",

@@ -1,7 +1,7 @@
 {
   "name": "@aghoz/react",
   "version": "0.4.0",
-  "description": "React hooks for real-time server push over SSE — useTopic, useTopicReducer and a provider that reports missed updates. Replaces refetchInterval polling.",
+  "description": "React hooks for Aghoz edge event streams — useTopic, useTopicReducer and a provider that reports replay gaps. Replaces refetchInterval polling.",
   "keywords": [
     "server-sent-events",
     "sse",

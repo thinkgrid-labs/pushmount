@@ -1,7 +1,7 @@
 {
   "name": "@aghoz/nest",
   "version": "0.4.0",
-  "description": "NestJS adapter for aghoz — real-time server push over Server-Sent Events (SSE), mounted as a route inside your existing Nest app. Works on both the Express and Fastify platforms.",
+  "description": "NestJS adapter for Aghoz resumable edge event streams, mounted inside your existing app on either the Express or Fastify platform.",
   "keywords": [
     "server-sent-events",
     "sse",

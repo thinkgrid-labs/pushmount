@@ -84,8 +84,8 @@ function App({ boot }) {
       // Closes the window between this page's data being read and the stream opening.
       // Without it, an order placed during that gap is lost with nothing reported.
       initialCursor={boot.cursor}
-      // The line that makes stale state impossible rather than unlikely. In a real app
-      // this is queryClient.invalidateQueries().
+      // Stops the UI trusting a stream the hub knows is incomplete. In a real app this
+      // is queryClient.invalidateQueries(); publication and handler failures are separate.
       onGap={(reason) => {
         setGap(reason)
         fetch(`/api/bootstrap?org=${orgId}`)

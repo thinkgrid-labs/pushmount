@@ -44,9 +44,9 @@ export interface SetAghozOptions {
    */
   initialCursor?: string
   /**
-   * Fires when updates were provably missed. Wiring this to a refetch is what makes stale
-   * state impossible rather than unlikely; it is the reason to use this library over
-   * fifteen lines of hand-rolled SSE.
+   * Fires when the accepted stream is provably incomplete. Wiring this to a refetch
+   * prevents the UI from trusting that incomplete stream; database-to-publish and
+   * handler failures are outside this signal.
    */
   onGap?: (reason: GapReason, topics: readonly string[]) => void
   onDenied?: (topics: readonly string[]) => void

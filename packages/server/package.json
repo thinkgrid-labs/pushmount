@@ -1,7 +1,7 @@
 {
   "name": "@aghoz/server",
   "version": "0.4.0",
-  "description": "In-process real-time server push over Server-Sent Events (SSE) for Node.js and Express — mounts as a route so your existing auth runs first. Gap detection, zero dependencies.",
+  "description": "In-process resumable edge event streams for Node.js and Express — mounts as a route so your existing auth runs first. Replay and explicit gaps, zero dependencies.",
   "keywords": [
     "server-sent-events",
     "sse",

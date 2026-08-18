@@ -1,7 +1,7 @@
 {
   "name": "aghoz-workspace",
   "private": true,
-  "description": "aghoz — real-time server push over Server-Sent Events (SSE) that mounts into the app you already have. Monorepo: TypeScript packages, Rust protocol core, conformance corpus.",
+  "description": "aghoz — resumable, authorization-aware edge event streams that mount into the backend you already have. TypeScript packages, Rust protocol core, conformance corpora.",
   "keywords": [
     "server-sent-events",
     "sse",

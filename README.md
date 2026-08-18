@@ -5,9 +5,9 @@
 </p>
 
 <p align="center">
-  <strong>Real-time server push for apps that already have a backend.</strong><br>
-  Server-Sent Events (SSE) that mount into your existing app as a route — so your own
-  authentication runs first, and per-user authorization is one line.<br>
+  <strong>Resumable, authorized event streams for apps that already have a backend.</strong><br>
+  Live server-to-client updates that mount into your existing app as a route — so your
+  authentication runs first, retained events replay, and an uncloseable gap becomes a refetch.<br>
   <sub><strong>Node.js only</strong> for now — Express, Fastify, NestJS on the server; React, Vue, Svelte in the
   browser. The protocol core is Rust behind a C ABI, so other languages follow.</sub>
 </p>
@@ -28,16 +28,21 @@ app.get('/events', hub.handler({
 
 No second service. No token exchange. No CORS.
 
-**aghoz** is a small, dependency-free real-time push library. It ships today for
+**aghoz** is a small, dependency-free edge event-stream library. It ships today for
 **Node.js** — **Express**, **Fastify**, **NestJS**, **React**, **Vue** and **Svelte** — and the protocol is specified and
 conformance-tested independently of any one runtime, so further languages are a binding
 rather than a rewrite. It replaces polling (`refetchInterval`,
 `setInterval` + `fetch`) with live server-to-client updates over **Server-Sent Events**,
 without the second service that **Mercure** or **Centrifugo** require and without the
 client-side database that a sync engine like **ElectricSQL** or **PowerSync** brings.
-Missed updates are reported as an error rather than silently lost. Scale past one process
-with an optional **Redis Streams** backplane. Written in **TypeScript**, with a **Rust**
-protocol core behind a C ABI for other languages.
+Events accepted by the hub resume from a cursor; if retained history cannot close an
+interruption, the client is told to refetch instead of trusting an incomplete stream.
+Scale past one process with an optional **Redis Streams** backplane. Written in
+**TypeScript**, with a **Rust** protocol core behind a C ABI for other languages.
+
+<p align="center">
+  <img src="./docs/edge-event-stream.svg" alt="Database changes enter a durable event path, pass through the authorization-aware Aghoz gateway, stream to foreground browser and mobile clients, and use APNs or FCM as a background wake-up signal. Clients replay from a cursor or refetch a snapshot on a gap.">
+</p>
 
 ---
 
@@ -57,7 +62,7 @@ protocol core behind a C ABI for other languages.
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
 > by two shared corpora — [97 vectors](./conformance/) pinning the protocol core and
 > [42 scenarios](./conformance/http/) pinning the HTTP layer over a real socket, both
-> language-neutral. The packages pass 263 tests plus 74 in Rust, the unsafe in the C ABI
+> language-neutral. The packages pass 264 tests plus 74 in Rust, the unsafe in the C ABI
 > is verified by Miri, and the [example app](./examples/express-react) runs end to end in
 > CI. Every significant decision — including the three that were reversed — is recorded
 > with its evidence in [DECISIONS.md](./DECISIONS.md).
@@ -67,6 +72,7 @@ protocol core behind a C ABI for other languages.
 ## Contents
 
 - [Why this exists](#why-this-exists)
+- [How it works](#how-it-works)
 - [How aghoz compares](#how-aghoz-compares)
 - [Read this before installing](#read-this-before-installing)
 - [What makes it different](#what-makes-it-different)
@@ -123,10 +129,32 @@ data forever is worse than one that polls, because nothing fails. No error is lo
 retry fires, no alert goes off. The page just quietly lies, and the first you hear of it
 is a support ticket saying the numbers look wrong.
 
-**So there is no small, correct option** for a team that wants to stop polling without
+**So there is no small, deliberate option** for a team that wants to stop polling without
 changing anything else about how their application works. That is the gap this fills:
-push that treats missed updates as an error rather than an outcome, mounted inside the
-app you already have, small enough to read in one sitting.
+push that can prove whether accepted, retained events cover a reconnect, mounted inside
+the app you already have, small enough to read in one sitting.
+
+---
+
+## How it works
+
+Aghoz sits at the **application edge**. Your database and APIs remain the source of truth;
+the stream is the low-latency signal that tells a UI what changed. In the smallest
+deployment, the write path publishes directly to an in-process hub. Where an event must
+survive a crash between the database commit and publication, put a transactional outbox
+or CDC in front of the hub and use Redis Streams, Kafka, NATS or another durable log
+internally.
+
+The browser never connects to that broker. Aghoz applies the application's existing
+authentication and topic authorization, translates the internal log into one resumable
+HTTP stream, and tells the client when bounded history is no longer enough. On a gap, the
+client reads a fresh snapshot from the ordinary API.
+
+This is **Kafka-like replay at the UI boundary, not Kafka for browsers**. Browser tabs and
+phones are ephemeral observers, not durable consumer groups: there are no client
+acknowledgements, no server-held offset per device, and no claim that a handler processed
+an event successfully. On mobile, stream only while the app is foregrounded; APNs or FCM
+is a wake-up hint while it is backgrounded, followed by replay or a snapshot refresh.
 
 ---
 
@@ -136,7 +164,7 @@ app you already have, small enough to read in one sitting.
 |---|---|---|---|---|---|
 | **Extra service to run** | no — a route in your app | yes | no | yes (sync service) | no |
 | **Authorization** | your existing middleware, one function | JWTs scoped to topics, minted by you | your own handshake code | row/shape rules in the sync layer | yours to write |
-| **Missed updates** | detected and reported (`onGap`) | reconnect replay, loss not surfaced | at-most-once by default | reconciled by the sync engine | silent |
+| **Interrupted delivery** | replay accepted events or report `onGap` | reconnect replay, loss not surfaced | at-most-once by default | reconciled by the sync engine | silent |
 | **Transport** | SSE over plain HTTP | SSE / WebSocket | WebSocket + fallbacks | WebSocket | SSE |
 | **Direction** | server → client only | server → client | bidirectional | bidirectional sync | server → client |
 | **Client-side database** | none | none | none | yes | none |
@@ -146,7 +174,9 @@ app you already have, small enough to read in one sitting.
 
 Read that table as scope, not scoring. If you need bidirectional messaging, use
 Socket.IO. If you need offline-first local writes, use a sync engine. aghoz is for
-the case where the server already knows something and the browser should stop asking.
+the case where the server already knows something and the browser or foreground mobile
+app should stop asking. Kafka, NATS and Redis Streams may sit behind Aghoz; they are not
+the client transport.
 
 ---
 
@@ -184,7 +214,7 @@ That one line replaces the entire token subsystem a standalone hub requires. It 
 single largest source of complexity in every competing product, and mounting in-process
 deletes it rather than simplifying it.
 
-**Missed updates are an error, not a silent outcome.** Two distinct loss conditions are
+**An interrupted accepted stream fails loudly.** Two transport loss conditions are
 detected and reported through one callback:
 
 - `history-truncated` — the client reconnected with a cursor older than retained history
@@ -195,12 +225,30 @@ detected and reported through one callback:
 <AghozProvider url="/events" onGap={() => queryClient.invalidateQueries()}>
 ```
 
-Wiring that one prop to a refetch makes stale state *impossible* rather than unlikely.
-Nothing else in this category treats it as a first-class concern.
+Wiring that one prop to a refetch means a client does not keep trusting a stream that the
+hub knows is incomplete. This covers events the hub or backplane accepted; it cannot
+detect an application that forgot to publish, a publish that failed after a database
+commit, or a handler that received an event and then failed. Those boundaries are
+explicit below rather than hidden inside the word "delivery."
 
 **It is small enough to read.** The entire protocol is two endpoints and one header, all
 of it in [PROTOCOL.md](./PROTOCOL.md). The target is that a developer understands the
 whole system in ten minutes.
+
+### The delivery contract
+
+| Boundary | What aghoz promises |
+|---|---|
+| Hub or backplane accepted the event | a monotonic id, bounded replay and ordered delivery on the shared sequence |
+| Connection ended | reconnect from the last received cursor; replay if retained, otherwise `onGap` |
+| Application handler ran | the cursor means **received**, not successfully processed; handler failures are reported but not retried |
+| Database transaction committed | no promise unless publication is made durable with an outbox or CDC |
+| Mobile app is backgrounded | no held stream; APNs or FCM wakes the app, which then resumes or refetches |
+
+The safest default is therefore an **invalidation event**: keep the API response as the
+authoritative state, use Aghoz to say "this changed," and refetch on the event or on a
+gap. Folding event payloads directly into client state is the faster, sharper option and
+requires idempotent, non-throwing handlers.
 
 ---
 
@@ -420,8 +468,9 @@ own, so a hub still holding subscribers at that point means `app.close()` never 
 Two steps everywhere: **provide a connection once at the root**, then **read a topic
 where you render**. One connection serves the whole app however many topics it carries.
 
-Wire `onGap` to a refetch. It is what makes stale state impossible rather than unlikely,
-and it is the reason to use this over fifteen lines of hand-rolled SSE.
+Wire `onGap` to a refetch. It prevents a known-incomplete accepted stream from remaining
+the UI's source of truth, and it is the reason to use this over fifteen lines of
+hand-rolled SSE.
 
 ### React
 
@@ -560,7 +609,8 @@ useTopicQueryData(`org/${orgId}/orders`, ['orders'], (list = [], order) => [orde
 ```
 
 Both register for gaps and invalidate on one, because a folded cache is only correct
-while every event was seen.
+while every accepted event was received and every handler succeeded. Prefer invalidation
+unless the extra refetch is measurably a problem.
 
 ---
 
@@ -570,7 +620,8 @@ while every event was seen.
 stream, anything published is lost — and without a cursor, *nothing reports it*. This is
 on every first page load. Pass `hub.cursor()` alongside your initial data and hand it
 back as `initialCursor`. It is two lines and it closes the only hole in the gap-detection
-story. With a backplane, `hub.cursor()` is this process's view of the shared sequence —
+story for the page's initial topic set. With a backplane, `hub.cursor()` is this process's
+view of the shared sequence —
 correct from boot once you have awaited `hub.ready()`, and behind it afterwards by at
 most the reader's round trip. `await hub.sharedCursor()` pays a round trip to close that
 last gap exactly; reach for it if replaying an event your snapshot already reflects is
@@ -583,10 +634,11 @@ client at once. `@aghoz/history-file` turns it back into an ordinary replay for 
 single-process deployment; a Redis backplane already does, because a Redis stream is a
 persistent shared history.
 
-**`publish` is not transactional with your database write.** A crash between the two
-loses the event with no record that it existed. Every product in this category behaves
-this way, but it should be stated rather than discovered. If you truly cannot lose an
-event, you need a transactional outbox.
+**`publish` is not transactional with your database write.** A crash between the two, an
+ignored rejected promise, or a forgotten call loses the event with no record that it
+existed. `onGap` cannot report an event the hub never accepted. If you truly cannot lose
+an event, use a transactional outbox or CDC and treat direct `hub.publish()` as the
+low-ceremony path rather than the durable one.
 
 **Your service worker can buffer the stream.** A worker doing
 `respondWith(fetch(event.request))` defeats every header the server sets, without
@@ -601,6 +653,20 @@ measure anything. If your users keep many tabs open,
 **Adding a topic reconnects.** There is no client-to-server channel by design, so a
 changed topic set means a new connection carrying the current cursor. Mounts inside one
 render pass are debounced into one connection; churning topics on every render is not.
+
+**A cursor only covers the topic set that produced it.** A global cursor cannot prove
+that initial state for a lazily added topic is current: another topic may advance the
+cursor past an event the new topic needed before the replacement connection opens. Until
+the pre-1.0 cutover contract is implemented, fetch or invalidate a newly added topic
+after its replacement stream opens; do not begin a client-side fold for a lazy topic from
+an earlier global cursor. Initial page topics stamped with the bootstrap cursor are not
+affected.
+
+**Received is not processed.** The client advances its cursor before invoking handlers so
+one broken component cannot block or replay the whole shared stream. A handler that
+throws is reported through `onError`, not retried. Invalidation handlers naturally
+recover by fetching authoritative state; payload reducers should catch parse/reducer
+errors and invalidate too.
 
 ---
 
@@ -632,6 +698,13 @@ discarding a real event as already-seen. The stream doubles as the shared histor
 is what lets a client reconnect to a *different* pod and still be told truthfully
 whether it missed anything. Pub/sub would give fan-out and nothing else.
 
+Kafka or NATS can be useful **behind** this boundary, especially when the application
+already has a durable event backbone. They are not drop-in transports for the current
+wire cursor. Kafka offsets and ordering are per partition, while this protocol carries
+one globally ordered `<ms>-<seq>` cursor. A Kafka backplane would therefore need either
+one partition, limiting scale, or a cursor vector and a protocol change. That decision
+belongs before v1.0 rather than inside an adapter that pretends the models are identical.
+
 Two consequences worth knowing.
 
 **Your own publishes travel through Redis** before reaching your own subscribers. That
@@ -652,6 +725,12 @@ directions: it reports a gap to every cold page load of a stream that has never 
 and reports none at all once the stream is gone entirely. Delete the two keys together; a
 stream rebuilt under a name whose floor was deleted can no longer vouch for itself, and
 answers conservatively.
+
+**The default Redis stream is one shared retention and replay budget.** Replay is bounded
+before topic filtering, so a hot unrelated topic or tenant can make a quiet subscriber
+refetch even when few relevant events changed. That is safe but can become noisy. Large
+multi-tenant deployments should use separate hubs/keys per authorization scope today;
+partitioned backplanes are a pre-1.0 design item.
 
 ---
 
@@ -883,7 +962,9 @@ that maps topics onto query keys is the top item on the [roadmap](#v02--reach-an
 It reconnects with its cursor, and the server replays from history. If the cursor is
 older than retained history, or the client was dropped as a slow consumer, that is a
 *gap* — reported through `onGap` rather than papered over. This is the whole reason the
-project exists; silent staleness is the failure mode hand-rolled SSE hides.
+project exists; silent staleness is the failure mode hand-rolled SSE hides. This answer
+applies to events already accepted by the hub or backplane. Database-to-publish failures
+need an outbox or CDC, and application handler failures need their own refetch policy.
 
 ### Does it work with Next.js?
 
@@ -1006,6 +1087,25 @@ Proving it in a second language is v0.5.
   replay. It cannot live in the core, which performs no IO by enforced invariant, so it
   sits beside the backplane and restores through `core.append`.
 
+### Next — correctness at the edge
+
+These are protocol-freeze gates, ahead of adding more client implementations:
+
+- **Define topic-set cutover.** A cursor describes the topics that produced it. When a
+  lazy component adds a new topic, an event for that topic can currently land before the
+  reconnect while an old topic advances the global cursor past it. Pin the interleaving
+  in the client corpus, then choose between per-topic cursors, a stable feed scope, or an
+  explicit invalidate-after-open contract. Until then, lazy topics refetch after opening.
+- **Make the publication boundary executable.** Ship an outbox/CDC integration guide and
+  example. Gap detection starts only after `publish` is accepted; documentation alone
+  cannot make a database commit and an event append atomic.
+- **Recover from handler failure.** The cursor intentionally advances before callbacks.
+  Cache adapters that parse or fold payloads should invalidate the affected query when a
+  callback fails rather than leave an advanced cursor over an unchanged projection.
+- **Choose the partition model.** The default Redis key is one sequence, retention budget
+  and replay scan for every topic. Specify tenant-scoped keys or a cursor vector before a
+  Kafka/NATS backplane promises partitioned scale.
+
 ### v0.5 — adapters in other languages
 
 v0.3 built the foundation. This is where it gets tested by something other than the
@@ -1101,19 +1201,18 @@ against a stable wire format rather than a risk to it.
 
 The honest architecture on mobile is a stream while the app is foregrounded and push
 notifications when it is not — the operating system suspends the process either way, and
-a held connection earns nothing while it is suspended. What the protocol contributes is
-that resuming is not guesswork: the client reconnects with its cursor and is told whether
-anything was missed.
+a held connection earns nothing while it is suspended. APNs and FCM are wake-up hints,
+not durable event delivery: the OS may delay, throttle or coalesce them. Persist the last
+received cursor on-device, reconnect when execution resumes, and refetch the authoritative
+snapshot whenever history cannot close the gap.
 
 ### Ideas, not commitments
 
 Things worth thinking about that may never happen.
 
-- **Postgres CDC auto-publish.** Watch the write-ahead log and publish on row change, so
-  application code stops calling `publish` by hand — and, more interestingly, so
-  publication becomes a consequence of the commit rather than a second action that can
-  fail alone. That is the honest fix for `publish` not being transactional. It is also a
-  bigger project than everything above it combined.
+- **Postgres CDC auto-publish.** Beyond the outbox/CDC guide above, a maintained adapter
+  could watch the write-ahead log and make publication a consequence of the commit rather
+  than a second application action. It is also a bigger project than the transport layer.
 - Binary payloads and per-event compression.
 - Wire-format compatibility with Mercure, which is currently free: cursor and id
   semantics already match.
@@ -1137,6 +1236,9 @@ reach only the subscribers authorized for it.
 
 ## Documentation
 
+- [Edge event-stream diagram](./docs/edge-event-stream.svg) — the editable, animated
+  browser/mobile architecture shown above; motion respects viewers that disable SVG
+  animation.
 - [PROTOCOL.md](./PROTOCOL.md) — the normative wire format: framing, ids, topics,
   cursors, control frames, the checkpoint header.
 - [ADAPTERS.md](./ADAPTERS.md) — how to bring aghoz to another language: which runtimes
@@ -1180,6 +1282,7 @@ this work shall be dual-licensed as above, with no additional terms or condition
 
 ---
 
-<sub>Keywords: server-sent events, SSE, real-time, live updates, server push, Node.js,
-Express, Fastify, React hooks, TypeScript, WebSocket alternative, replace polling,
-pub/sub, Redis Streams, Mercure alternative, Centrifugo alternative, Rust.</sub>
+<sub>Keywords: edge event stream, server-sent events, SSE, resumable stream, real-time,
+live updates, server push, Node.js, Express, Fastify, React hooks, TypeScript, WebSocket
+alternative, replace polling, pub/sub, Redis Streams, Mercure alternative, Centrifugo
+alternative, Rust.</sub>

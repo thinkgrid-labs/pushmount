@@ -15,11 +15,11 @@
  * ```
  *
  * **Gaps are the reason this is a package rather than three lines of your own.** A
- * stream that dropped and resumed can have missed events — PROTOCOL.md §8 — and a cache
- * updated only by the events that arrived would then be silently, permanently wrong.
- * Every hook here registers for gap notifications and invalidates when one is reported,
- * so the failure mode degrades to a refetch instead of to stale data nobody notices.
- * That is the same guarantee `refetchInterval` gave you by accident, kept on purpose.
+ * stream that dropped and resumed can be missing accepted events — PROTOCOL.md §8 — and
+ * a cache updated only by received payloads would then be silently wrong. Every hook
+ * registers for gap notifications and invalidates when one is reported, so that transport
+ * failure degrades to a refetch. Database-to-publish and handler failures remain separate
+ * boundaries; the ordinary query response stays authoritative.
  */
 
 import { useEffect, useMemo, useRef } from 'react'
@@ -153,10 +153,11 @@ export function useTopicInvalidation(
  * Folds each event straight into the cached value, with no refetch at all.
  *
  * The faster path, and the one with a sharp edge: it is only correct while the client
- * has seen *every* event. So a reported gap does not fold — it invalidates, because at
- * that point the folded value is provably missing something and only the server knows
- * what. Same reason `useTopic` cannot serve a collection: an event carries the change,
- * not the state.
+ * has received every accepted event and every parse/update succeeds. A reported gap does
+ * not fold — it invalidates, because at that point only the server knows the state. Parse
+ * and updater failure is currently surfaced through the client's `onError`; applications
+ * using this path should invalidate there too. Same reason `useTopic` cannot serve a
+ * collection: an event carries the change, not the state.
  *
  * `undefined` from the updater leaves the cache untouched, which is also what happens
  * before the query has ever resolved — there is nothing to fold into yet, and seeding

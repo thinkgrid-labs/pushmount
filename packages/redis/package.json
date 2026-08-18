@@ -1,7 +1,7 @@
 {
   "name": "@aghoz/redis",
   "version": "0.4.0",
-  "description": "Redis Streams backplane for aghoz — makes real-time SSE push reach subscribers across every process, pod or cluster worker, with Redis as the id sequencer.",
+  "description": "Redis Streams backplane for aghoz — shared sequencing, replay and fan-out across every process, pod or cluster worker.",
   "keywords": [
     "server-sent-events",
     "sse",
