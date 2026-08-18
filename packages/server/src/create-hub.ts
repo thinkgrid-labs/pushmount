@@ -640,11 +640,19 @@ export function createHub(options: CreateHubOptions = {}) {
     },
 
     close(): void {
+      if (closed) return
       closed = true
       // Fire and forget: `close()` is synchronous by contract, and a store that fails to
-      // flush on the way out must not become an unhandled rejection during shutdown.
+      // flush — or a backplane that fails to release its reader — must not become an
+      // unhandled rejection during shutdown. The hub owns both resources because the
+      // Nest async module can create them internally, leaving its caller no handle to
+      // close separately.
       store?.close().catch((error) => {
         counters.errors.history++
+        onError(error)
+      })
+      options.backplane?.close().catch((error) => {
+        counters.errors.backplane++
         onError(error)
       })
       for (const id of [...connections.keys()]) drop(id, 'hub-closed')

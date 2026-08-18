@@ -320,6 +320,7 @@ export async function createRedisBackplane(
     },
 
     async close() {
+      if (!running) return
       running = false
       // The reader may be parked in a BLOCK; disconnect is what interrupts it.
       subscriber.disconnect?.()

@@ -125,3 +125,18 @@ test('a connection dropped during replay is answered 503, not a broken stream', 
 
   await app.close()
 })
+
+test('hub.close owns the backplane lifecycle and closes it exactly once', async () => {
+  let closes = 0
+  const backplane = slowBackplane(0)
+  backplane.close = async () => {
+    closes++
+  }
+  const hub = createHub({ backplane, keepAliveMs: 0 })
+
+  hub.close()
+  hub.close()
+  await Promise.resolve()
+
+  assert.equal(closes, 1)
+})

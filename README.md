@@ -65,7 +65,7 @@ Scale past one process with an optional **Redis Streams** backplane. Written in
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
 > by two shared corpora — [97 vectors](./conformance/) pinning the protocol core and
 > [42 scenarios](./conformance/http/) pinning the HTTP layer over a real socket, both
-> language-neutral. The packages pass 267 tests plus 74 in Rust, the unsafe in the C ABI
+> language-neutral. The packages pass 268 tests plus 74 in Rust, the unsafe in the C ABI
 > is verified by Miri, and the [example app](./examples/express-react) runs end to end in
 > CI. Every significant decision — including the three that were reversed — is recorded
 > with its evidence in [DECISIONS.md](./DECISIONS.md).

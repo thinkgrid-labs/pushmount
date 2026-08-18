@@ -43,6 +43,11 @@ Node 22+ remains the supported server runtime. Bun 1.3.14 is a compatibility tar
 first NestJS deployment, gated in CI by the complete HTTP corpus and focused Nest/Redis smoke
 tests. This is an explicit production canary, not a claim that every Bun release is supported.
 
+The hub owns the backplane lifecycle. This matters for the Nest async module: it can create
+the Redis backplane inside its factory, where application code never receives a separate
+handle. `hub.close()` therefore closes the blocking Redis reader as well as subscribers and
+timers, so a deployment shutdown cannot leave the process alive behind Nest.
+
 ---
 
 ## D16 — The product is an edge event stream, not Kafka for browsers

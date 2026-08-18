@@ -74,7 +74,6 @@ async function node(key, hubOptions = {}, backplaneOptions = {}) {
     base: `http://127.0.0.1:${server.address().port}`,
     async close() {
       hub.close()
-      await backplane.close()
       await new Promise((r) => server.close(r))
     },
   }

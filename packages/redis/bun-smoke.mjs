@@ -70,8 +70,6 @@ try {
 } finally {
   first?.hub.close()
   second?.hub.close()
-  await first?.backplane.close()
-  await second?.backplane.close()
 
   const cleanup = clients[0]
   if (cleanup !== undefined) await cleanup.del(key, `${key}:floor`).catch(() => {})
