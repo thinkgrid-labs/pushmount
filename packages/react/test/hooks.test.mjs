@@ -224,6 +224,32 @@ test('a supplied client is not closed by the provider', async () => {
   await waitFor(() => assert.equal(hub.connectionCount(), 0), { timeout: 4000 })
 })
 
+test('the provider forwards credentials, headers and an injected fetch', async () => {
+  const calls = []
+  const requestHeaders = { 'x-stream-auth': 'from-react-provider' }
+  const transport = (input, init) => {
+    calls.push(init)
+    return fetch(input, init)
+  }
+
+  function Probe() {
+    useTopic('private/topic', 0)
+    return null
+  }
+
+  await mount(h(Probe, { key: 'p' }), {
+    credentials: 'include',
+    headers: requestHeaders,
+    fetch: transport,
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].credentials, 'include')
+  assert.equal(calls[0].headers.get('x-stream-auth'), 'from-react-provider')
+  assert.equal(calls[0].headers.get('accept'), 'text/event-stream')
+  cleanup()
+})
+
 // ------------------------------------------------------------------- parsing
 
 test('parse defaults to JSON and is overridable for raw strings', async () => {

@@ -47,7 +47,13 @@
  * and no way for a tab that did not move to quietly leave the union.
  */
 
-import { Client, type ClientState, type GapReason, type Handler } from './client.js'
+import {
+  Client,
+  type ClientState,
+  type GapReason,
+  type Handler,
+  type RequestHeaders,
+} from './client.js'
 import { compareIds } from './parser.js'
 
 /**
@@ -95,6 +101,10 @@ export interface SharedClientOptions {
   debounceMs?: number
   baseBackoffMs?: number
   maxBackoffMs?: number
+  /** Fetch credentials mode. Use `include` for cross-origin cookie authentication. */
+  credentials?: RequestCredentials
+  /** Static headers or a factory re-evaluated whenever the leader reconnects. */
+  headers?: RequestHeaders
   fetch?: typeof globalThis.fetch
   /**
    * Scopes the lock and the channel.
@@ -310,6 +320,8 @@ export class SharedClient implements AghozClient {
       ...(this.#options.debounceMs !== undefined && { debounceMs: this.#options.debounceMs }),
       ...(this.#options.baseBackoffMs !== undefined && { baseBackoffMs: this.#options.baseBackoffMs }),
       ...(this.#options.maxBackoffMs !== undefined && { maxBackoffMs: this.#options.maxBackoffMs }),
+      ...(this.#options.credentials !== undefined && { credentials: this.#options.credentials }),
+      ...(this.#options.headers !== undefined && { headers: this.#options.headers }),
       ...(this.#options.fetch !== undefined && { fetch: this.#options.fetch }),
       onGap: (reason, topics) => {
         this.#send({ t: 'gap', reason, topics: [...topics] })

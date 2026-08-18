@@ -88,7 +88,7 @@ npm install ${manifest.name}
 
 ${
       BROWSER.has(manifest.name)
-        ? 'Runs in any browser with `fetch` and `ReadableStream`, and in Node 22+. It talks\nto an aghoz hub, which is **Node.js only** for now — there is no server adapter for\nanother language yet.'
+        ? 'Runs in any browser with `fetch` and `ReadableStream`, and in Node 22+. It talks\nto an aghoz hub, which is **Node.js only** for now — there is no server adapter for\nanother language yet. Cross-origin clients support cookie credentials and dynamic\nheaders that are evaluated again on reconnect; see the integration guide.'
         : '**Node.js only** for now, Node 22+. There is no adapter for another language yet —\nthe Rust core and C ABI exist so that there can be.'
     }
 

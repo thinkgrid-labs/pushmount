@@ -26,7 +26,7 @@ app.get('/events', hub.handler({
 }))
 ```
 
-No second service. No token exchange. No CORS.
+No second service. No token exchange. No CORS when the UI and API share an origin.
 
 **aghoz** is a small, dependency-free edge event-stream library. It ships today for
 **Node.js** — **Express**, **Fastify**, **NestJS**, **React**, **Vue** and **Svelte** — and the protocol is specified and
@@ -51,6 +51,9 @@ Scale past one process with an optional **Redis Streams** backplane. Written in
 > **Node.js only.** Every package is Node 22+. There is no Python, PHP, Go or Ruby adapter
 > — the Rust core, the C ABI and the two conformance corpora exist so that there can be,
 > and Go is first in line. See [the roadmap](#v05--adapters-in-other-languages).
+> Bun 1.3.14 also has a compatibility lane covering the HTTP corpus, NestJS/Express and
+> Redis Streams for the first production canary. Node remains the supported runtime; this
+> does not promise compatibility with every Bun release.
 >
 > **The API may still change**, and so may the wire protocol until it is tagged. There is
 > no deprecation policy yet.
@@ -62,7 +65,7 @@ Scale past one process with an optional **Redis Streams** backplane. Written in
 > What *is* real: the protocol is specified in [PROTOCOL.md](./PROTOCOL.md) and enforced
 > by two shared corpora — [97 vectors](./conformance/) pinning the protocol core and
 > [42 scenarios](./conformance/http/) pinning the HTTP layer over a real socket, both
-> language-neutral. The packages pass 264 tests plus 74 in Rust, the unsafe in the C ABI
+> language-neutral. The packages pass 267 tests plus 74 in Rust, the unsafe in the C ABI
 > is verified by Miri, and the [example app](./examples/express-react) runs end to end in
 > CI. Every significant decision — including the three that were reversed — is recorded
 > with its evidence in [DECISIONS.md](./DECISIONS.md).
@@ -573,6 +576,54 @@ const off = client.subscribe('org/42/orders', (data, meta) => {
 })
 ```
 
+### Authenticated cross-origin clients
+
+When the web app and API use different origins, configure authentication on the stream just
+as you do on the rest of the API. Cookie sessions need `credentials: 'include'`:
+
+```jsx
+<AghozProvider
+  url="https://api.example.com/events"
+  credentials="include"
+  initialCursor={boot.cursor}
+  onGap={() => queryClient.invalidateQueries()}
+>
+  <App />
+</AghozProvider>
+```
+
+Bearer tokens and API keys use a header factory. It is evaluated on the initial request and
+again on every reconnect, so it sees a token refreshed while the previous stream was open:
+
+```js
+const client = createClient({
+  url: 'https://api.example.com/events',
+  headers: () => ({ authorization: `Bearer ${auth.currentAccessToken()}` }),
+  onGap: () => refetch(),
+})
+```
+
+`Accept` and `Last-Event-ID` belong to the protocol and override values supplied by the
+application. In React, keep a header factory stable (module scope or `useCallback`) so a
+render does not replace the provider's client. `provideAghoz`, `setAghozClient` and
+`createSharedClient` accept the same `credentials`, `headers` and injected `fetch` options.
+
+The API must opt into credentialed CORS. For NestJS, use exact production origins rather
+than `*`, allow the cursor and authentication headers, and expose the checkpoint header:
+
+```ts
+app.enableCors({
+  origin: ['https://admin.example.com', 'https://partners.example.com'],
+  credentials: true,
+  allowedHeaders: ['Authorization', 'Content-Type', 'Last-Event-ID', 'X-Api-Key', 'X-Origin'],
+  exposedHeaders: ['Last-Event-ID-Checkpoint'],
+})
+```
+
+The checkpoint exposure is correctness-sensitive: the client reads it to decide whether
+retained history can close a reconnect. Verify the OPTIONS preflight and the streaming GET
+through the real production proxy, not only against the Nest process directly.
+
 Every function in the Vue and Svelte packages also accepts an explicit `client`, which is
 what makes them usable outside a component — in a plain module, or a test, where
 injection and Svelte context cannot be read.
@@ -644,6 +695,11 @@ low-ceremony path rather than the durable one.
 `respondWith(fetch(event.request))` defeats every header the server sets, without
 touching your server. If your stream hangs and you have a service worker, that is
 where to look first.
+
+**Cross-origin auth needs both sides configured.** `credentials: 'include'` makes the
+browser send cookies; it does not make the API's CORS policy accept them. Likewise, an
+`Authorization` header or the protocol's `Last-Event-ID` causes a preflight. Allow those
+headers, use an exact origin with credentials, and expose `Last-Event-ID-Checkpoint`.
 
 **HTTP/1.1 costs one of six connections per origin.** One connection per tab, so this is
 rarely fatal, but it disappears entirely under HTTP/2 — worth having on before you
@@ -778,6 +834,9 @@ Two things to know:
 - **Give each hub its own `name`** if you mount more than one. Two hubs have different
   topics and different authorization, and must not share a connection. Defaults to the
   url, which is right for a single mount.
+- **Authentication options follow the leader.** `credentials`, dynamic `headers` and an
+  injected `fetch` are forwarded whenever a tab becomes leader, and header factories run
+  again for each reconnect.
 
 ## Observability
 
@@ -1015,6 +1074,9 @@ core with a C ABI and a Node binding, not shipped.
   **shipped** as [`hub.stats()`](#observability), with closes attributed by cause and
   rejections bucketed by cause, because a total filed under the wrong reason sends you
   after the wrong problem. Counters only; rates are the caller's to derive.
+- ~~Authenticated cross-origin clients.~~ — **Shipped** with fetch `credentials` and
+  reconnect-aware header factories across the client, shared-tab client and all framework
+  providers (DECISIONS.md D17). Protocol headers remain library-owned.
 
 ### v0.3 — the adapter foundation
 

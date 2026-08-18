@@ -18,6 +18,7 @@ export {
   type GapReason,
   type Handler,
   type EventMeta,
+  type RequestHeaders,
 } from './client.js'
 
 export { SseParser, compareIds, type ParsedEvent } from './parser.js'

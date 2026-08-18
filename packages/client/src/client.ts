@@ -27,6 +27,15 @@ export interface EventMeta {
 
 export type Handler = (data: string, meta: EventMeta) => void
 
+/**
+ * Headers added to every stream attempt.
+ *
+ * A factory is evaluated again on reconnect, which is what bearer-token clients need:
+ * a token refreshed while the old stream was open must not be captured forever. Cookies
+ * usually need only `credentials: 'include'` instead.
+ */
+export type RequestHeaders = HeadersInit | (() => HeadersInit | Promise<HeadersInit>)
+
 export interface ClientOptions {
   /** The mounted path, e.g. `/events`. */
   url: string
@@ -61,13 +70,29 @@ export interface ClientOptions {
   debounceMs?: number
   baseBackoffMs?: number
   maxBackoffMs?: number
+  /**
+   * Fetch credentials mode for the stream request. Defaults to `same-origin`, matching
+   * `fetch`. Cross-origin cookie authentication therefore opts in with `include`.
+   */
+  credentials?: RequestCredentials
+  /**
+   * Application headers added to every connection attempt.
+   *
+   * Use a factory for rotating bearer tokens. It runs on the initial connection and on
+   * every reconnect. Protocol-owned `Accept` and `Last-Event-ID` values cannot be
+   * overridden here.
+   */
+  headers?: RequestHeaders
   /** Injectable for tests and for runtimes with a non-global fetch. */
   fetch?: typeof globalThis.fetch
 }
 
 export class Client {
-  readonly #options: Required<Omit<ClientOptions, 'initialCursor' | 'originId'>> & {
+  readonly #options: Required<
+    Omit<ClientOptions, 'initialCursor' | 'originId' | 'headers'>
+  > & {
     initialCursor?: string
+    headers: RequestHeaders
   }
   readonly #originId: string
   readonly #handlers = new Map<string, Set<Handler>>()
@@ -104,6 +129,8 @@ export class Client {
       debounceMs: options.debounceMs ?? 10,
       baseBackoffMs: options.baseBackoffMs ?? 500,
       maxBackoffMs: options.maxBackoffMs ?? 30_000,
+      credentials: options.credentials ?? 'same-origin',
+      headers: options.headers ?? {},
       fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
       ...(options.initialCursor !== undefined && { initialCursor: options.initialCursor }),
     }
@@ -352,23 +379,37 @@ export class Client {
     }
   }
 
-  #connect(topics: readonly string[], signal: AbortSignal): Promise<Response> {
+  async #connect(topics: readonly string[], signal: AbortSignal): Promise<Response> {
     // §4.1 — each topic is encoded individually, then joined. Encoding the joined
     // string instead would escape the separators and produce one absurd topic.
     const query = new URLSearchParams()
     const encoded = topics.map(encodeURIComponent).join(',')
 
-    const headers: Record<string, string> = { accept: 'text/event-stream' }
+    const configured =
+      typeof this.#options.headers === 'function'
+        ? await this.#options.headers()
+        : this.#options.headers
+    const headers = new Headers(configured)
+    // These are protocol state, not application configuration. In particular, accepting
+    // a stale Last-Event-ID from configured headers would make the client replay from a
+    // position different from the cursor it exposes.
+    headers.set('accept', 'text/event-stream')
+    headers.delete('last-event-id')
     let url = `${this.#options.url}?topics=${encoded}`
     if (this.#cursor !== undefined) {
-      headers['last-event-id'] = this.#cursor
+      headers.set('last-event-id', this.#cursor)
       // §4.1 — the query fallback is sent too, so a runtime that strips the header
       // still resumes rather than silently restarting from now.
       query.set('last_event_id', this.#cursor)
       url += `&${query.toString()}`
     }
 
-    return this.#options.fetch(url, { headers, signal, cache: 'no-store' })
+    return this.#options.fetch(url, {
+      headers,
+      signal,
+      cache: 'no-store',
+      credentials: this.#options.credentials,
+    })
   }
 
   async #read(

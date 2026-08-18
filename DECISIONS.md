@@ -5,6 +5,46 @@ Newest first.
 
 ---
 
+## D17 — Cross-origin authentication is connection configuration, not protocol data
+
+**Date:** 18 August 2026 · **Status:** accepted
+
+### The first production host is not same-origin
+
+Mounting Aghoz inside an application's API preserves its authentication and authorization,
+but it does not imply that every browser is served from the API's origin. Reko has two web
+applications connecting to a separate NestJS API. The original client inherited fetch's
+`same-origin` credentials default and offered no application headers, so neither its cookie
+session nor a rotating bearer token could reliably authenticate that stream.
+
+Putting a token in the URL would make it appear in browser history, access logs and proxy
+telemetry. Requiring every caller to replace `fetch` for a normal authentication concern
+would also turn reconnect and cursor behaviour into application code.
+
+### Decision: credentials plus reconnect-aware headers
+
+`createClient` and `createSharedClient` accept `credentials` and `headers`. Headers may be a
+static `HeadersInit` or an async factory evaluated for every connection attempt, so a bearer
+token refreshed while the old stream was open is read again on reconnect. React, Vue and
+Svelte forward the same options from their root providers.
+
+The protocol owns `Accept: text/event-stream` and `Last-Event-ID`; application headers cannot
+override them. The URL cursor fallback remains, but it is not an authentication channel.
+Cookies use `credentials: 'include'`; bearer and API-key clients use the header factory.
+
+CORS stays the host application's responsibility. A credentialed deployment must name exact
+web origins, allow its authentication headers and `Last-Event-ID`, and expose
+`Last-Event-ID-Checkpoint`. Aghoz documents that contract because omitting the checkpoint
+header turns a detectable replay gap into one the browser cannot inspect.
+
+### Runtime scope
+
+Node 22+ remains the supported server runtime. Bun 1.3.14 is a compatibility target for the
+first NestJS deployment, gated in CI by the complete HTTP corpus and focused Nest/Redis smoke
+tests. This is an explicit production canary, not a claim that every Bun release is supported.
+
+---
+
 ## D16 — The product is an edge event stream, not Kafka for browsers
 
 **Date:** 18 August 2026 · **Status:** accepted

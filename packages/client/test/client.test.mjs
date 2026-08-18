@@ -176,6 +176,60 @@ test('initialCursor closes the cold-start window', async () => {
   }
 })
 
+test('credentials and fresh application headers are applied on every reconnect', async () => {
+  const requests = []
+  const calls = []
+  let token = 'first-token'
+  const s = await boot({
+    authorize: (req) => {
+      requests.push(req.headers)
+      return true
+    },
+  })
+  const client = createClient({
+    url: s.url,
+    debounceMs: 20,
+    baseBackoffMs: 20,
+    credentials: 'include',
+    headers: async () => ({
+      authorization: `Bearer ${token}`,
+      // Application configuration cannot replace protocol-owned values.
+      accept: 'application/json',
+      'last-event-id': 'stale-application-cursor',
+    }),
+    fetch: (input, init) => {
+      calls.push(init)
+      return fetch(input, init)
+    },
+  })
+
+  try {
+    client.subscribe('private/orders', () => {})
+    await until(() => client.state === 'open', 2000, 'first authenticated stream')
+
+    assert.equal(calls[0].credentials, 'include')
+    assert.equal(requests[0].authorization, 'Bearer first-token')
+    assert.equal(requests[0].accept, 'text/event-stream')
+    assert.equal(requests[0]['last-event-id'], undefined, 'configured cursors are discarded')
+
+    const event = await s.hub.publish('private/orders', { changed: true })
+    await until(() => client.cursor === event.id, 2000, 'cursor advance')
+
+    token = 'refreshed-token'
+    s.hub.disconnect(() => true)
+    await until(() => client.connectionCount === 2, 3000, 'authenticated reconnect')
+    await until(() => client.state === 'open', 2000, 'reopened stream')
+
+    assert.equal(calls[1].credentials, 'include')
+    assert.equal(requests[1].authorization, 'Bearer refreshed-token')
+    assert.equal(requests[1].accept, 'text/event-stream')
+    assert.equal(requests[1]['last-event-id'], event.id, 'the tracked cursor wins')
+  } finally {
+    client.close()
+    await s.close()
+  }
+})
+
 // ----------------------------------------------------------------------- §8 gaps
 
 test('onGap fires once for history-truncated, though it is signalled twice', async () => {
